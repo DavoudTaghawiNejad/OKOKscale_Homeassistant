@@ -18,6 +18,7 @@ yet.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -111,7 +112,9 @@ class OkokScaleOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self) -> None:
         self._editing_person_id: str | None = None
-        self._last_added_name: str | None = None
+        self._pending_person_id: str | None = None
+        self._pending_person_name: str | None = None
+        self._pending_armed_at: float | None = None
 
     @property
     def _coordinator(self):
@@ -133,9 +136,11 @@ class OkokScaleOptionsFlow(config_entries.OptionsFlow):
                 age_years=user_input["age_years"],
                 height_cm=user_input["height_cm"],
             )
+            self._pending_armed_at = time.time()
             await self._coordinator.async_arm_registration(person.id)
             await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            self._last_added_name = person.name
+            self._pending_person_id = person.id
+            self._pending_person_name = person.name
             return await self.async_step_add_person_done()
 
         schema = vol.Schema(
@@ -149,14 +154,44 @@ class OkokScaleOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="add_person", data_schema=schema)
 
     async def async_step_add_person_done(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        if user_input is not None:
+        """Hold the dialog open until the arming window is actually consumed.
+
+        Submitting this form doesn't close it by itself - each submission
+        (and the initial display) re-checks whether the pending person has
+        really been weighed yet (via `last_assignment`, not just
+        ref_weight_kg, since a re-registered person's ref could already be
+        seeded from an old CSV - see coordinator.async_add_person). If the
+        window has expired with nothing captured, this becomes an error
+        dialog (`async_abort`) instead of a silent success.
+        """
+        # A fresh coordinator instance may exist after the reload in
+        # async_step_add_person, or after a previous loop through this step.
+        coordinator = self._coordinator
+        last_assignment = coordinator.store.last_assignment
+        captured = (
+            last_assignment is not None
+            and last_assignment.get("person_id") == self._pending_person_id
+            and last_assignment.get("assigned_at", 0) >= self._pending_armed_at
+        )
+
+        if captured:
             return self.async_create_entry(title="", data=dict(self.config_entry.options))
+
+        remaining = REGISTRATION_ARMING_SECONDS - (time.time() - self._pending_armed_at)
+        if remaining <= 0:
+            return self.async_abort(
+                reason="registration_timed_out",
+                description_placeholders={"name": self._pending_person_name or ""},
+            )
+
+        errors: dict[str, str] = {"base": "not_yet_weighed"} if user_input is not None else {}
         return self.async_show_form(
             step_id="add_person_done",
             data_schema=vol.Schema({}),
+            errors=errors,
             description_placeholders={
-                "name": self._last_added_name or "",
-                "window_seconds": str(REGISTRATION_ARMING_SECONDS),
+                "name": self._pending_person_name or "",
+                "seconds_left": str(max(0, int(remaining))),
             },
         )
 

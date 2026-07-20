@@ -40,7 +40,7 @@
       },
       "add_person_done": {
         "title": "Step on the scale now",
-        "description": "Have **{name}** step on the scale within the next {window_seconds} seconds - that weighing is captured as their first reference weight, bypassing the usual nearest-weight matching. If nobody steps on in time, {name} is still saved and will be matched automatically the next time they're weighed."
+        "description": "Have **{name}** step on the scale now - that weighing is captured as their first reference weight, bypassing the usual nearest-weight matching. {seconds_left} seconds left. Click **Submit** once they've stepped on to finish, or again later to check - this dialog won't close until it's captured."
       },
       "edit_person": {
         "title": "Edit a person",
@@ -77,8 +77,12 @@
         }
       }
     },
+    "error": {
+      "not_yet_weighed": "No weighing detected yet. Step on the scale, then click Submit again."
+    },
     "abort": {
-      "no_people": "There are no registered people yet - add one first."
+      "no_people": "There are no registered people yet - add one first.",
+      "registration_timed_out": "{name} didn't step on the scale in time, so no reference weight was captured. They've still been saved and will be matched automatically (by nearest weight) the next time they're weighed - or use Configure → Edit a person to try registering them again."
     }
   },
   "entity": {

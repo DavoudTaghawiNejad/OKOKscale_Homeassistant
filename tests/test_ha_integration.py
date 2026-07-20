@@ -164,11 +164,12 @@ async def test_add_person_via_options_flow_creates_entities(configured_entry) ->
     )
     assert result3["type"] == FlowResultType.FORM
     assert result3["step_id"] == "add_person_done"
-
-    result4 = await hass.config_entries.options.async_configure(result3["flow_id"], {})
-    assert result4["type"] == FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
 
+    # Entities are already created at this point (the reload that follows
+    # adding the person happens before add_person_done is even shown) -
+    # the dialog staying open waiting for a weighing is a separate concern,
+    # covered by test_add_person_done_waits_for_weighing_before_closing.
     all_ids = hass.states.async_entity_ids()
     assert "sensor.okok_scale_me_weight" in all_ids
     assert "sensor.okok_scale_me_body_fat" in all_ids
@@ -289,3 +290,57 @@ async def test_remove_person_deletes_device_and_entities(configured_entry) -> No
     assert entity_registry.async_get("sensor.okok_scale_me_weight") is None
     assert entity_registry.async_get("button.okok_scale_me_download_csv") is None
     assert device_registry.async_get_device(identifiers={(DOMAIN, f"{entry.entry_id}_me")}) is None
+
+
+async def _start_add_person_flow(hass, entry, name: str = "Me"):
+    """Drive the options flow up to (and including) the first add_person_done show."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_person"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"name": name, "sex": "male", "age_years": 40, "height_cm": 178},
+    )
+    assert result["step_id"] == "add_person_done"
+    return result
+
+
+async def test_add_person_done_waits_for_weighing_before_closing(configured_entry) -> None:
+    """The dialog must not close on submit until a weighing is actually captured."""
+    hass, entry = configured_entry
+    result = await _start_add_person_flow(hass, entry)
+
+    # Submitting before anyone's stepped on the scale must NOT close the dialog.
+    result2 = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    assert result2["type"] == FlowResultType.FORM
+    assert result2["step_id"] == "add_person_done"
+    assert result2["errors"] == {"base": "not_yet_weighed"}
+
+    # Now they actually step on the scale.
+    coordinator = _coordinator(hass, entry)
+    await coordinator._async_finish_session(_build_session(*F_6190_LOCKED, now=1000.0))
+    await hass.async_block_till_done()
+
+    result3 = await hass.config_entries.options.async_configure(result2["flow_id"], {})
+    assert result3["type"] == FlowResultType.CREATE_ENTRY
+
+    assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(61.9)
+
+
+async def test_add_person_done_times_out_with_error(configured_entry) -> None:
+    """No weighing within the arming window -> an error dialog, not a silent close."""
+    hass, entry = configured_entry
+    base_time = 1_700_000_000.0
+
+    with patch("custom_components.okok_scale.config_flow.time.time", return_value=base_time):
+        result = await _start_add_person_flow(hass, entry)
+
+    with patch("custom_components.okok_scale.config_flow.time.time", return_value=base_time + 200):
+        result2 = await hass.config_entries.options.async_configure(result["flow_id"], {})
+
+    assert result2["type"] == FlowResultType.ABORT
+    assert result2["reason"] == "registration_timed_out"
+
+    # The person is still saved (per spec), just without a captured reference weight.
+    coordinator = _coordinator(hass, entry)
+    assert "me" in coordinator.people
+    assert coordinator.people["me"].ref_weight_kg is None
