@@ -121,6 +121,10 @@ class OkokScalePersonSensor(SensorEntity):
         self._coordinator = coordinator
         self._person_id = person.id
         self._attr_unique_id = f"{DOMAIN}_{person.id}_{description.key}"
+        # Pinned explicitly (not left to has_entity_name auto-naming) so it
+        # matches the documented sensor.okok_scale_<person>_<metric>
+        # pattern the frontend card's auto-discovery regex relies on.
+        self.entity_id = f"sensor.{DOMAIN}_{person.id}_{description.key}"
         self._attr_device_info = coordinator.person_device_info(person)
 
     @property
@@ -161,6 +165,7 @@ class OkokScaleLastMeasurementSensor(SensorEntity):
     def __init__(self, coordinator: OkokScaleCoordinator) -> None:
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_{coordinator.entry_id}_last_measurement"
+        self.entity_id = f"sensor.{DOMAIN}_last_measurement"
         self._attr_device_info = coordinator.hub_device_info()
 
     @property

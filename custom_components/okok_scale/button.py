@@ -41,6 +41,7 @@ class OkokScaleDownloadCsvButton(ButtonEntity):
         self._person_id = person.id
         self._person_name = person.name
         self._attr_unique_id = f"{DOMAIN}_{person.id}_download_csv"
+        self.entity_id = f"button.{DOMAIN}_{person.id}_download_csv"
         self._attr_device_info = coordinator.person_device_info(person)
 
     async def async_press(self) -> None:

@@ -40,6 +40,7 @@ class OkokScaleReassignSelect(SelectEntity):
     def __init__(self, coordinator: OkokScaleCoordinator) -> None:
         self._coordinator = coordinator
         self._attr_unique_id = f"{DOMAIN}_{coordinator.entry_id}_reassign_last"
+        self.entity_id = f"select.{DOMAIN}_reassign_last"
         self._attr_device_info = coordinator.hub_device_info()
 
     @property

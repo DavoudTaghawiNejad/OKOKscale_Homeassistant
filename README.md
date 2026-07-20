@@ -198,20 +198,15 @@ cards:
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install pytest
-.venv/bin/pip install homeassistant   # optional: only needed to import the HA-dependent modules
-                                       # (coordinator.py, config_flow.py, sensor.py, select.py,
-                                       # button.py, __init__.py, person_store.py); the parser,
-                                       # body-composition, assignment, and csv_logger tests never
-                                       # import homeassistant at all.
-.venv/bin/python -m pytest tests/ -v
+.venv/bin/python -m pytest tests/test_scale_parser.py tests/test_body_composition.py tests/test_session_engine.py -v
 ```
 
-`tests/conftest.py` registers lightweight placeholder package objects for
-`custom_components`/`custom_components.okok_scale` in `sys.modules` before any test imports a
-submodule, so `scale_parser.py`, `body_composition.py`, `assignment.py`, and `csv_logger.py`'s
-synchronous helpers can be unit tested with plain `pytest` and no Home Assistant install at all,
-even though they use the same intra-package relative imports (`from .const import ...`) that the
-real integration uses inside Home Assistant.
+The three files above are pure - no Home Assistant install required. `tests/conftest.py` registers
+lightweight placeholder package objects for `custom_components`/`custom_components.okok_scale` in
+`sys.modules` (only when `homeassistant` isn't importable) before any test imports a submodule, so
+`scale_parser.py`, `body_composition.py`, `assignment.py`, and `csv_logger.py`'s synchronous
+helpers can be unit tested with plain `pytest`, even though they use the same intra-package
+relative imports (`from .const import ...`) that the real integration uses inside Home Assistant.
 
 - `tests/test_scale_parser.py` - frame validation, session dedup, the 60 s gap rule, and the
   reference session decode (61.90 kg / impedance 6000).
@@ -219,3 +214,25 @@ real integration uses inside Home Assistant.
   clamping, and divide-by-zero guards.
 - `tests/test_session_engine.py` - registration-arming bypass, nearest-neighbour + bootstrap
   matching, and CSV reassignment (row movement + recomputed refs).
+
+### Real Home Assistant integration tests
+
+`tests/test_ha_integration.py` runs the config flow, options flow, entity setup, and the full
+weighing pipeline against an actual `homeassistant` core instance, via
+[pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component).
+This is what caught two real bugs that plain import-checking missed: `OptionsFlow.config_entry`
+becoming a read-only property in recent Home Assistant (assigning to it in `__init__` used to work
+silently and now raises), and `has_entity_name` + device-name auto-naming producing entity IDs like
+`select.okok_body_composition_scale_reassign_last_measurement` instead of the documented
+`select.okok_scale_reassign_last` (fixed by pinning `self.entity_id` explicitly on every entity
+instead of relying on auto-generation).
+
+```bash
+.venv/bin/pip install pytest-homeassistant-custom-component dbus-fast
+.venv/bin/python -m pytest tests/test_ha_integration.py -v
+```
+
+`pytest.ini` sets `pythonpath = .` and `asyncio_mode = auto` for these tests. On macOS (no
+BlueZ/D-Bus), `_patch_bluetooth_adapter_history` in that file plugs a couple of real-D-Bus
+codepaths the test plugin's own bluetooth mocking doesn't stub for the installed package versions
+- none of that is needed on the actual target (HA Container on Linux with a real adapter).
