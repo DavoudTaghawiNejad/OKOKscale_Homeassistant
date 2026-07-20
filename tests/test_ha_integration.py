@@ -252,3 +252,40 @@ async def test_reassign_select_moves_measurement_between_people(configured_entry
     assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(61.9)
     assert float(hass.states.get("sensor.okok_scale_wife_weight").state) == pytest.approx(62.0)
     assert hass.states.get("select.okok_scale_reassign_last").state == "(no change)"
+
+
+async def test_remove_person_deletes_device_and_entities(configured_entry) -> None:
+    """Removing a person must not leave an orphaned "unavailable" device.
+
+    Dropping the person from our own store is not enough - Home Assistant
+    only stops *re-creating* their entities on the next setup; it doesn't
+    know to delete the ones already in the registry unless we explicitly
+    remove the device (see coordinator.async_remove_person).
+    """
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    hass, entry = configured_entry
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_add_person(name="Me", sex="male", age_years=40, height_cm=178)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = _coordinator(hass, entry)
+
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+
+    assert hass.states.get("sensor.okok_scale_me_weight") is not None
+    assert entity_registry.async_get("sensor.okok_scale_me_weight") is not None
+    device = device_registry.async_get_device(identifiers={(DOMAIN, f"{entry.entry_id}_me")})
+    assert device is not None
+
+    await coordinator.async_remove_person("me")
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.okok_scale_me_weight") is None
+    assert entity_registry.async_get("sensor.okok_scale_me_weight") is None
+    assert entity_registry.async_get("button.okok_scale_me_download_csv") is None
+    assert device_registry.async_get_device(identifiers={(DOMAIN, f"{entry.entry_id}_me")}) is None

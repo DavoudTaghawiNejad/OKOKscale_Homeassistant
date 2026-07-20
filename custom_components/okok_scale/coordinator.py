@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
@@ -342,6 +343,20 @@ class OkokScaleCoordinator:
         await self.store.async_update_person(person)
 
     async def async_remove_person(self, person_id: str) -> None:
+        """Remove a person's registration, entities, and device.
+
+        Dropping them from the store alone isn't enough: the next platform
+        setup just stops re-creating their entities, but Home Assistant
+        doesn't know to delete ones it already registered, so they'd be
+        left behind as an "unavailable" orphaned device. Removing the
+        device explicitly cascades to remove all of its entities too (see
+        entity_registry.EntityRegistry.async_device_modified).
+        """
+        device_registry = dr.async_get(self.hass)
+        device = device_registry.async_get_device(identifiers={(DOMAIN, f"{self.entry_id}_{person_id}")})
+        if device is not None:
+            device_registry.async_remove_device(device.id)
+
         await self.store.async_remove_person(person_id)
         self.person_data.pop(person_id, None)
 
