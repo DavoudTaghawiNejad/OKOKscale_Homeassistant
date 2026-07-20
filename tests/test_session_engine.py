@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from custom_components.okok_scale.assignment import is_registration_armed, match_person
-from custom_components.okok_scale.const import DEFAULT_MATCH_TOLERANCE_KG
 from custom_components.okok_scale.csv_logger import (
     append_row,
     read_last_weight_kg,
@@ -14,8 +13,22 @@ from custom_components.okok_scale.csv_logger import (
 from custom_components.okok_scale.models import Person
 
 
-def make_person(id: str, name: str, ref_weight_kg: float | None, sex: str = "male") -> Person:
-    return Person(id=id, name=name, sex=sex, age_years=40, height_cm=178, ref_weight_kg=ref_weight_kg)
+def make_person(
+    id: str,
+    name: str,
+    ref_weight_kg: float | None,
+    ref_impedance: int | None = None,
+    sex: str = "male",
+) -> Person:
+    return Person(
+        id=id,
+        name=name,
+        sex=sex,
+        age_years=40,
+        height_cm=178,
+        ref_weight_kg=ref_weight_kg,
+        ref_impedance=ref_impedance,
+    )
 
 
 class TestRegistrationArming:
@@ -28,49 +41,94 @@ class TestRegistrationArming:
     def test_is_registration_armed_when_nothing_pending(self) -> None:
         assert is_registration_armed(armed_at=None, now=1000.0) is False
 
-    def test_pending_person_wins_even_if_weight_is_far_off(self) -> None:
-        """Armed registration bypasses nearest-neighbour matching entirely."""
-        people = [make_person("me", "Me", ref_weight_kg=61.5)]
-        # 78 kg is nowhere near "me"'s ref, but a registration is armed for
-        # a brand new person -> must still go to the pending person.
-        result = match_person(78.0, people, pending_person_id="wife")
+    def test_pending_person_wins_even_if_measurement_is_far_off(self) -> None:
+        """Armed registration bypasses midpoint-interval matching entirely."""
+        people = [make_person("me", "Me", ref_weight_kg=61.5, ref_impedance=500)]
+        # 78 kg / 900 ohm is nowhere near "me"'s ref, but a registration is
+        # armed for a brand new person -> must still go to the pending person.
+        result = match_person(78.0, 900, people, pending_person_id="wife")
         assert result == "wife"
 
 
-class TestNearestNeighbourMatching:
-    def test_routes_close_weight_to_known_ref(self) -> None:
-        people = [make_person("me", "Me", ref_weight_kg=61.5), make_person("wife", "Wife", ref_weight_kg=None)]
-        assert match_person(61.9, people) == "me"
+class TestMidpointIntervalMatching:
+    def test_single_seeded_person_always_matches_regardless_of_value(self) -> None:
+        people = [make_person("me", "Me", ref_weight_kg=61.5, ref_impedance=500)]
+        assert match_person(120.0, 50, people) == "me"
 
-    def test_routes_far_weight_to_unseeded_person(self) -> None:
-        people = [make_person("me", "Me", ref_weight_kg=61.5), make_person("wife", "Wife", ref_weight_kg=None)]
-        assert match_person(78.0, people) == "wife"
-
-    def test_within_tolerance_still_goes_to_known_person(self) -> None:
-        people = [make_person("me", "Me", ref_weight_kg=61.5), make_person("wife", "Wife", ref_weight_kg=None)]
-        # exactly at the tolerance boundary -> still counts as "close enough"
-        weight = 61.5 + DEFAULT_MATCH_TOLERANCE_KG
-        assert match_person(weight, people) == "me"
-
-    def test_two_known_people_pick_nearest(self) -> None:
+    def test_weight_and_impedance_agree_on_lower_person(self) -> None:
         people = [
-            make_person("me", "Me", ref_weight_kg=61.5),
-            make_person("wife", "Wife", ref_weight_kg=70.0),
+            make_person("me", "Me", ref_weight_kg=61.5, ref_impedance=500),
+            make_person("wife", "Wife", ref_weight_kg=70.0, ref_impedance=600),
         ]
-        assert match_person(69.0, people) == "wife"
-        assert match_person(63.0, people) == "me"
+        # weight midpoint 65.75, impedance midpoint 550 - both sides agree "me".
+        assert match_person(63.0, 520, people) == "me"
 
-    def test_nobody_has_a_ref_yet_uses_first_unseeded(self) -> None:
-        people = [make_person("me", "Me", ref_weight_kg=None), make_person("wife", "Wife", ref_weight_kg=None)]
-        assert match_person(61.9, people) == "me"
+    def test_weight_and_impedance_agree_on_higher_person(self) -> None:
+        people = [
+            make_person("me", "Me", ref_weight_kg=61.5, ref_impedance=500),
+            make_person("wife", "Wife", ref_weight_kg=70.0, ref_impedance=600),
+        ]
+        assert match_person(69.0, 580, people) == "wife"
+
+    def test_exact_midpoint_tie_goes_to_the_lower_person(self) -> None:
+        people = [
+            make_person("me", "Me", ref_weight_kg=60.0, ref_impedance=600),
+            make_person("wife", "Wife", ref_weight_kg=70.0, ref_impedance=700),
+        ]
+        # weight midpoint 65.0, impedance midpoint 650 - landing exactly on both.
+        assert match_person(65.0, 650, people) == "me"
+
+    def test_three_seeded_people_middle_interval(self) -> None:
+        people = [
+            make_person("low", "Low", ref_weight_kg=50.0, ref_impedance=400),
+            make_person("mid", "Mid", ref_weight_kg=65.0, ref_impedance=550),
+            make_person("high", "High", ref_weight_kg=90.0, ref_impedance=800),
+        ]
+        # weight midpoints: 57.5, 77.5; impedance midpoints: 475, 675.
+        assert match_person(66.0, 560, people) == "mid"
+        assert match_person(48.0, 390, people) == "low"
+        assert match_person(95.0, 900, people) == "high"
+
+    def test_disagreement_falls_back_to_weight_times_impedance_between_the_two_candidates(self) -> None:
+        # Impedance is inverted relative to weight (wife is heavier but has
+        # lower impedance), so weight and impedance pick different people
+        # for a measurement in between.
+        people = [
+            make_person("me", "Me", ref_weight_kg=61.5, ref_impedance=600),
+            make_person("wife", "Wife", ref_weight_kg=70.0, ref_impedance=500),
+        ]
+        # weight midpoint 65.75 -> 63.0 kg is in "me"'s (lower) interval.
+        # impedance midpoint 550 -> 520 ohm is in "wife"'s (lower) interval,
+        # since wife has the *lower* reference impedance. Disagreement.
+        # products: me=61.5*600=36900, wife=70.0*500=35000, midpoint=35950.
+        # measurement product = 63.0*520=32760 <= 35950 -> the lower one, wife.
+        assert match_person(63.0, 520, people) == "wife"
+
+    def test_unseeded_person_never_selected_while_any_seeded_person_exists(self) -> None:
+        people = [
+            make_person("me", "Me", ref_weight_kg=61.5, ref_impedance=500),
+            make_person("wife", "Wife", ref_weight_kg=None, ref_impedance=None),
+        ]
+        # Wildly far from "me", but there's no bootstrap-to-unseeded rule
+        # anymore - "me" is the only seeded person, so their interval covers
+        # everything.
+        assert match_person(120.0, 50, people) == "me"
+
+    def test_nobody_seeded_yet_uses_first_unseeded(self) -> None:
+        people = [
+            make_person("me", "Me", ref_weight_kg=None, ref_impedance=None),
+            make_person("wife", "Wife", ref_weight_kg=None, ref_impedance=None),
+        ]
+        assert match_person(61.9, 6000, people) == "me"
+
+    def test_partially_seeded_person_counts_as_unseeded(self) -> None:
+        # Has a weight but no impedance yet (e.g. an unlocked final frame) -
+        # can't build an interval from just one axis.
+        people = [make_person("me", "Me", ref_weight_kg=61.5, ref_impedance=None)]
+        assert match_person(61.9, 6000, people) == "me"
 
     def test_no_people_registered_returns_none(self) -> None:
-        assert match_person(61.9, []) is None
-
-    def test_far_weight_with_no_unseeded_person_falls_back_to_nearest(self) -> None:
-        """No bootstrap target available -> best-effort nearest match, not None."""
-        people = [make_person("me", "Me", ref_weight_kg=61.5)]
-        assert match_person(78.0, people) == "me"
+        assert match_person(61.9, 6000, []) is None
 
 
 class TestCsvReassignment:

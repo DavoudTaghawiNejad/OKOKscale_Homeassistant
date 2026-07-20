@@ -78,12 +78,13 @@ TEST_MAC = "F0:2C:59:F1:F0:28"
 F_6190_LOCKED = (0x30C0, "182E17700a0125f02c59f1f028")  # 61.90 kg, impedance 6000
 # Synthetic (not captured) 78.00 kg / impedance 5500 locked frame for a second person.
 F_7800_LOCKED = (0x01C0, "1e78157c0a0125f02c59f1f028")
-# Synthetic locked frames for the reassignment test: two people with close
-# reference weights (62.5 and 61.9 kg - within match_tolerance_kg of each
-# other), then a third, genuinely ambiguous 62.0 kg weighing that nearest-
-# neighbour auto-assigns to the wrong one of the two.
-F_6250_LOCKED = (0x02C0, "186a13240a0125f02c59f1f028")  # 62.50 kg, impedance 4900
-F_6200_LOCKED = (0x03C0, "183813ec0a0125f02c59f1f028")  # 62.00 kg, impedance 5100
+# Synthetic locked frames for the reassignment test: a well-separated second
+# person (70.0 kg / 5000 ohm), then a third weighing (63.0 kg / 5900 ohm)
+# that midpoint-interval matching genuinely assigns to "me" (both weight and
+# impedance land in "me"'s territory - verified against the real match_person
+# function, not just by construction) even though it was actually the wife.
+F_7000_LOCKED = (0x02C0, "1b5813880a0125f02c59f1f028")  # 70.00 kg, impedance 5000
+F_6300_LOCKED = (0x03C0, "189c170c0a0125f02c59f1f028")  # 63.00 kg, impedance 5900
 
 
 def _build_session(mfr_id: int, payload_hex: str, now: float):
@@ -215,8 +216,9 @@ async def test_full_weighing_pipeline_assigns_and_updates_sensors(configured_ent
 
 
 async def test_reassign_select_moves_measurement_between_people(configured_entry) -> None:
-    """The documented failure mode: two people within match_tolerance_kg
-    of each other get confused, and the reassign select is how you fix it.
+    """The documented failure mode: midpoint-interval matching lands a
+    measurement in the wrong person's territory, and the reassign select
+    is how you fix it.
     """
     hass, entry = configured_entry
     coordinator = _coordinator(hass, entry)
@@ -227,19 +229,20 @@ async def test_reassign_select_moves_measurement_between_people(configured_entry
     await hass.async_block_till_done()
     coordinator = _coordinator(hass, entry)
 
-    # Both people get an established reference weight, close together.
+    # Both people get an established reference weight + impedance.
     await coordinator.async_arm_registration("me")
-    await coordinator._async_finish_session(_build_session(*F_6190_LOCKED, now=1000.0))  # 61.9
+    await coordinator._async_finish_session(_build_session(*F_6190_LOCKED, now=1000.0))  # 61.9 kg / 6000 ohm
     await coordinator.async_arm_registration("wife")
-    await coordinator._async_finish_session(_build_session(*F_6250_LOCKED, now=2000.0))  # 62.5
+    await coordinator._async_finish_session(_build_session(*F_7000_LOCKED, now=2000.0))  # 70.0 kg / 5000 ohm
     await hass.async_block_till_done()
 
-    # An unarmed 62.0 kg weighing is nearer to "me" (0.1 kg) than "wife"
-    # (0.5 kg) by nearest-neighbour, but it was actually the wife.
-    await coordinator._async_finish_session(_build_session(*F_6200_LOCKED, now=3000.0))
+    # An unarmed 63.0 kg / 5900 ohm weighing lands in "me"'s territory on
+    # both axes (verified against match_person directly - see the frame
+    # comments above), but it was actually the wife.
+    await coordinator._async_finish_session(_build_session(*F_6300_LOCKED, now=3000.0))
     await hass.async_block_till_done()
 
-    assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(62.0)
+    assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(63.0)
 
     await hass.services.async_call(
         "select",
@@ -251,7 +254,7 @@ async def test_reassign_select_moves_measurement_between_people(configured_entry
 
     # "me" falls back to their last remaining (correct) row; "wife" gets the moved one.
     assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(61.9)
-    assert float(hass.states.get("sensor.okok_scale_wife_weight").state) == pytest.approx(62.0)
+    assert float(hass.states.get("sensor.okok_scale_wife_weight").state) == pytest.approx(63.0)
     assert hass.states.get("select.okok_scale_reassign_last").state == "(no change)"
 
 

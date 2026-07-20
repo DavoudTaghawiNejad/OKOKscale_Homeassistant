@@ -7,14 +7,36 @@ wall clock) and then calls `match_person`, keeping the actual matching
 decision - the part worth testing precisely - free of any HA/async
 concerns.
 
-See build brief section 3 ("Person identification") for the full spec.
+Matching algorithm (see build brief section 3 for the arming-bypass part;
+the rest replaces the original nearest-neighbour/tolerance scheme):
+
+1. An armed registration (`pending_person_id`) wins unconditionally.
+2. Every person with both a reference weight *and* a reference impedance
+   is sorted by weight; the boundary between two consecutive people is
+   the midpoint between their reference weights, so each person owns a
+   contiguous interval (the lowest extends to -inf, the highest to +inf -
+   there is no "too far to match" concept here). Find whose interval the
+   measured weight falls in. Do the same, independently, sorted by
+   impedance instead.
+3. If both agree, that's the match.
+4. If they disagree, narrow to just those two candidates and repeat the
+   same midpoint-interval check once more, this time using weight *
+   impedance as the single comparison axis between just the two of them.
+5. If nobody has both a reference weight and impedance yet (a brand new
+   household with nobody weighed even once), fall back to the first such
+   not-yet-seeded person - otherwise a second/third person could never be
+   picked up before they have reference data of their own.
+6. No registered people at all -> None.
+
+A measurement landing exactly on a midpoint is assigned to the
+lower-value person (ties broken by `<=`) - arbitrary but deterministic.
 """
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Callable, Sequence
 
-from .const import DEFAULT_MATCH_TOLERANCE_KG, REGISTRATION_ARMING_SECONDS
+from .const import REGISTRATION_ARMING_SECONDS
 from .models import Person
 
 
@@ -29,43 +51,45 @@ def is_registration_armed(
     return (now - armed_at) <= window_seconds
 
 
+def _interval_match(value: float, people: Sequence[Person], key: Callable[[Person], float]) -> str:
+    """Which person's midpoint-bounded interval `value` falls into.
+
+    `people` is sorted by `key`; consecutive people are split at the
+    midpoint of their reference values. Always returns somebody's id.
+    """
+    ordered = sorted(people, key=key)
+    for person, next_person in zip(ordered, ordered[1:]):
+        midpoint = (key(person) + key(next_person)) / 2
+        if value <= midpoint:
+            return person.id
+    return ordered[-1].id
+
+
 def match_person(
     weight_kg: float,
+    impedance: int,
     people: Sequence[Person],
     *,
     pending_person_id: str | None = None,
-    match_tolerance_kg: float = DEFAULT_MATCH_TOLERANCE_KG,
 ) -> str | None:
-    """Decide which registered person a completed weighing belongs to.
-
-    Priority order:
-      1. `pending_person_id` - the caller should only pass this through when
-         a registration is currently armed and unexpired
-         (see `is_registration_armed`); it wins unconditionally.
-      2. Nearest-neighbour match against every person's `ref_weight_kg`.
-      3. Bootstrap rule: if the nearest known ref is further than
-         `match_tolerance_kg` away *and* at least one person still has no
-         ref at all, assign to that not-yet-seeded person instead - this is
-         what lets a second household member get recognised automatically
-         the first few times, before they have their own reference weight.
-      4. If nobody has a ref yet, the first not-yet-seeded person gets it.
-      5. No registered people at all -> None (caller should surface this,
-         e.g. as an unassigned measurement).
-    """
+    """Decide which registered person a completed weighing belongs to."""
     if pending_person_id is not None:
         return pending_person_id
 
-    known = [(p.id, p.ref_weight_kg) for p in people if p.ref_weight_kg is not None]
-    unseeded_ids = [p.id for p in people if p.ref_weight_kg is None]
+    seeded = [p for p in people if p.ref_weight_kg is not None and p.ref_impedance is not None]
+    if not seeded:
+        unseeded = [p for p in people if p.ref_weight_kg is None or p.ref_impedance is None]
+        return unseeded[0].id if unseeded else None
 
-    if known:
-        nearest_id, nearest_ref = min(known, key=lambda pair: abs(weight_kg - pair[1]))
-        nearest_distance = abs(weight_kg - nearest_ref)
-        if unseeded_ids and nearest_distance > match_tolerance_kg:
-            return unseeded_ids[0]
-        return nearest_id
+    weight_match = _interval_match(weight_kg, seeded, key=lambda p: p.ref_weight_kg)
+    impedance_match = _interval_match(impedance, seeded, key=lambda p: p.ref_impedance)
 
-    if unseeded_ids:
-        return unseeded_ids[0]
+    if weight_match == impedance_match:
+        return weight_match
 
-    return None
+    candidates = [p for p in seeded if p.id in (weight_match, impedance_match)]
+    return _interval_match(
+        weight_kg * impedance,
+        candidates,
+        key=lambda p: p.ref_weight_kg * p.ref_impedance,
+    )

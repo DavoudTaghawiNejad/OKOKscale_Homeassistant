@@ -24,6 +24,7 @@ class Person:
     activity_level: str = "normal"
     created: str = ""
     ref_weight_kg: float | None = None
+    ref_impedance: int | None = None
 
 
 @dataclass

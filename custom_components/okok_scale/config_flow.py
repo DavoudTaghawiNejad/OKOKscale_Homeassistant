@@ -2,9 +2,8 @@
 
 Adding the integration only asks for the scale's MAC address (with a
 discovery pick-list when possible). Everything else - registering people,
-tuning the nearest-neighbour matcher, picking a body-fat formula - lives in
-the options flow, reachable via Settings -> Devices & Services -> OKOK
-Body Composition Scale -> Configure.
+picking a body-fat formula - lives in the options flow, reachable via
+Settings -> Devices & Services -> OKOK Body Composition Scale -> Configure.
 
 Registration UX decision (see README "Registering people"): "Add person"
 collects name/sex/age/height, then arms a time-limited capture window (see
@@ -34,10 +33,8 @@ from .const import (
     BODY_FAT_FORMULAS,
     CHIPSEA_MARKER_BYTE,
     CONF_BODY_FAT_FORMULA,
-    CONF_MATCH_TOLERANCE_KG,
     CONF_SCALE_MAC,
     DEFAULT_BODY_FAT_FORMULA,
-    DEFAULT_MATCH_TOLERANCE_KG,
     DEFAULT_SCALE_MAC,
     DOMAIN,
     REGISTRATION_ARMING_SECONDS,
@@ -267,9 +264,6 @@ class OkokScaleOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_SCALE_MAC, default=options.get(CONF_SCALE_MAC, self.config_entry.data[CONF_SCALE_MAC])
                 ): str,
-                vol.Required(
-                    CONF_MATCH_TOLERANCE_KG, default=options.get(CONF_MATCH_TOLERANCE_KG, DEFAULT_MATCH_TOLERANCE_KG)
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=20)),
                 vol.Required(
                     CONF_BODY_FAT_FORMULA, default=options.get(CONF_BODY_FAT_FORMULA, DEFAULT_BODY_FAT_FORMULA)
                 ): vol.In(BODY_FAT_FORMULAS),

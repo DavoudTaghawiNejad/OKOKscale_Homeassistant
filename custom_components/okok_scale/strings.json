@@ -25,7 +25,7 @@
           "add_person": "Add a person",
           "edit_person": "Edit a person",
           "remove_person": "Remove a person",
-          "settings": "Matching & formula settings"
+          "settings": "Scale & formula settings"
         }
       },
       "add_person": {
@@ -40,7 +40,7 @@
       },
       "add_person_done": {
         "title": "Step on the scale now",
-        "description": "Have **{name}** step on the scale now - that weighing is captured as their first reference weight, bypassing the usual nearest-weight matching. {seconds_left} seconds left. Click **Submit** once they've stepped on to finish, or again later to check - this dialog won't close until it's captured."
+        "description": "Have **{name}** step on the scale now - that weighing is captured as their first reference weight and reference impedance, bypassing the usual weight/impedance matching. {seconds_left} seconds left. Click **Submit** once they've stepped on to finish, or again later to check - this dialog won't close until it's captured."
       },
       "edit_person": {
         "title": "Edit a person",
@@ -65,15 +65,13 @@
         }
       },
       "settings": {
-        "title": "Matching & formula settings",
+        "title": "Scale & formula settings",
         "data": {
           "scale_mac": "Scale MAC address",
-          "match_tolerance_kg": "Match tolerance (kg)",
           "body_fat_formula": "Body-fat formula"
         },
         "data_description": {
-          "match_tolerance_kg": "How close (in kg) a weighing must be to someone's last known weight to be auto-assigned to them, instead of to a not-yet-seeded person.",
-          "body_fat_formula": "All options are BMI/age/sex based (see README) - the scale's impedance reading is logged but not used by any of them."
+          "body_fat_formula": "All options are BMI/age/sex based (see README) - the scale's impedance reading is logged and used to help identify who's weighing in, but not by any of the body-fat formulas themselves."
         }
       }
     },
@@ -82,7 +80,7 @@
     },
     "abort": {
       "no_people": "There are no registered people yet - add one first.",
-      "registration_timed_out": "{name} didn't step on the scale in time, so no reference weight was captured. They've still been saved and will be matched automatically (by nearest weight) the next time they're weighed - or use Configure → Edit a person to try registering them again."
+      "registration_timed_out": "{name} didn't step on the scale in time, so no reference weight/impedance was captured. They're still saved, but matching needs both to work - if anyone else in the household is already registered with a reference, {name} won't be auto-matched until you remove and re-add them to try again, or use the reassign select to manually correct their next weighing."
     }
   },
   "entity": {

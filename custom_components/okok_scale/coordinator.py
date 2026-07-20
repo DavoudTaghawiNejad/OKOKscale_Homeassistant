@@ -27,11 +27,9 @@ from .assignment import is_registration_armed, match_person
 from .body_composition import compute_body_composition
 from .const import (
     CONF_BODY_FAT_FORMULA,
-    CONF_MATCH_TOLERANCE_KG,
     CONF_SCALE_MAC,
     CSV_DIR_NAME,
     DEFAULT_BODY_FAT_FORMULA,
-    DEFAULT_MATCH_TOLERANCE_KG,
     DOMAIN,
     LAST_MEASUREMENT_TIMEOUT_SECONDS,
     REASSIGN_MAX_AGE_SECONDS,
@@ -62,7 +60,6 @@ class OkokScaleCoordinator:
         self.entry_id = entry.entry_id
 
         self.scale_mac: str = entry.options.get(CONF_SCALE_MAC, entry.data[CONF_SCALE_MAC])
-        self.match_tolerance_kg: float = entry.options.get(CONF_MATCH_TOLERANCE_KG, DEFAULT_MATCH_TOLERANCE_KG)
         self.body_fat_formula: str = entry.options.get(CONF_BODY_FAT_FORMULA, DEFAULT_BODY_FAT_FORMULA)
 
         # Import here to keep person_store's real `homeassistant.helpers.storage`
@@ -193,9 +190,9 @@ class OkokScaleCoordinator:
 
         person_id = match_person(
             final.weight_kg,
+            final.impedance,
             list(self.store.people.values()),
             pending_person_id=pending_person_id,
-            match_tolerance_kg=self.match_tolerance_kg,
         )
 
         if person_id is None:
@@ -245,6 +242,7 @@ class OkokScaleCoordinator:
         )
 
         person.ref_weight_kg = final.weight_kg
+        person.ref_impedance = final.impedance
         await self.store.async_update_person(person)
 
         measurement = {
@@ -277,25 +275,35 @@ class OkokScaleCoordinator:
         async_dispatcher_send(self.hass, f"{SIGNAL_LAST_MEASUREMENT_UPDATED}_{self.entry_id}")
 
     async def _async_refresh_person_from_csv(self, person_id: str) -> None:
-        """Seed a person's ref_weight_kg / displayed sensors from their CSV.
+        """Sync a person's ref_weight_kg/ref_impedance + displayed sensors
+        from their CSV's last row.
 
-        Used on startup, and after a reassignment moves rows out of a
-        person's file (their displayed state must fall back to whatever
-        row is now actually last, or go blank if none remain).
+        Used on startup, and after a reassignment moves rows in or out of
+        a person's file - both their matching reference (ref_weight_kg /
+        ref_impedance, which the interval-matching algorithm depends on
+        being current) and their displayed sensors must fall back to
+        whatever row is now actually last, or go blank if none remain.
+        Always overwrites, rather than only seeding when unset: after a
+        reassignment moves rows *out* of a person's file, their ref must
+        follow the row that's now actually last, not stay pinned to the
+        just-reassigned-away value.
         """
         row = await self.csv_logger.async_read_last_row(person_id)
         person = self.store.people.get(person_id)
 
         if row is None:
             self.person_data.pop(person_id, None)
-            if person is not None and person.ref_weight_kg is not None:
+            if person is not None and (person.ref_weight_kg is not None or person.ref_impedance is not None):
                 person.ref_weight_kg = None
+                person.ref_impedance = None
                 await self.store.async_update_person(person)
             return
 
         weight_kg = float(row["weight_kg"])
-        if person is not None and person.ref_weight_kg is None:
+        impedance = int(float(row["impedance"])) if row.get("impedance") else 0
+        if person is not None and (person.ref_weight_kg != weight_kg or person.ref_impedance != impedance):
             person.ref_weight_kg = weight_kg
+            person.ref_impedance = impedance
             await self.store.async_update_person(person)
 
         def _optional_float(value: str | None) -> float | None:
@@ -306,7 +314,7 @@ class OkokScaleCoordinator:
             "person_id": person_id,
             "person_name": person.name if person is not None else person_id,
             "weight_kg": weight_kg,
-            "impedance": int(_optional_float(row.get("impedance")) or 0),
+            "impedance": impedance,
             "timestamp": row.get("time"),
             "bmi": _optional_float(row.get("bmi")),
             "body_fat_pct": _optional_float(row.get("body_fat_pct")),

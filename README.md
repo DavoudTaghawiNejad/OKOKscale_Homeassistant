@@ -33,9 +33,12 @@ real captured session (which must decode to **61.90 kg / impedance 6000**).
 Open the integration's **Configure** dialog and choose **Add a person**: name, sex, age, height.
 Submitting arms a **120-second capture window** (`REGISTRATION_ARMING_SECONDS` in `const.py`) -
 have that person step on the scale within that window and their very first weighing becomes their
-reference weight, bypassing the usual nearest-weight matching entirely. If nobody steps on in
-time, the person is still saved (with no reference weight yet) and gets matched automatically the
-next time they're weighed, via the bootstrap rule below.
+reference weight *and* reference impedance, bypassing the usual weight/impedance matching
+entirely. The dialog stays open and waits: clicking Submit before they've stepped on shows "no
+weighing detected yet" and re-shows the same form, and if the window expires with nobody weighed
+in, it becomes an error dialog instead of silently pretending it worked. The person is still saved
+either way (see the matching limitation below for what that means if they miss the window while
+someone else is already registered).
 
 We chose an options-flow arming step over a per-person "arm capture" button (the brief's other
 allowed option) because it doesn't require entities to exist for a person before they're created,
@@ -48,21 +51,35 @@ their entities and registration but keeps their CSV file on disk.
 
 On every completed session:
 
-1. If a registration is currently armed, the weighing goes to that pending person, no matter how
-   far off their eventual reference weight is.
-2. Otherwise, nearest-neighbour matching against every person's last known weight
-   (`ref_weight_kg`): the closest match wins.
-3. **Bootstrap rule**: if the closest known reference is further away than the match tolerance
-   (default **2.5 kg**, `match_tolerance_kg` in Configure -> Settings) *and* at least one person
-   still has no reference weight at all, the weighing goes to that not-yet-seeded person instead.
-   This is what lets a second household member get picked up automatically the first few times,
-   before they have their own reference weight.
-4. If nobody has a reference weight yet, the first not-yet-seeded person gets it.
+1. If a registration is currently armed, the weighing goes to that pending person unconditionally,
+   no matter how far off their eventual reference weight/impedance turns out to be.
+2. Otherwise, **midpoint-interval matching**: every registered person who has both a reference
+   weight and a reference impedance is sorted by weight, and the midpoint between each pair of
+   consecutive people's weights becomes the boundary between their "territory" - the lowest
+   person's territory extends down to zero, the highest's up to infinity, so every measurement
+   lands in exactly one person's territory (there's no "too far to match" case). The same exercise
+   is repeated independently sorted by impedance instead of weight.
+3. If the weight-territory match and the impedance-territory match agree, that's the person.
+4. If they **disagree**, the two disagreeing candidates are compared one more time, the same way,
+   but using weight × impedance as the single combined axis between just the two of them.
+5. If nobody has both a reference weight and impedance yet (a fresh household, nobody weighed in
+   even once), the weighing goes to the first such not-yet-seeded person.
 
-**Known limitation**: two people whose weights are within `match_tolerance_kg` of each other can
-get confused with one another. That's what the reassign select is for (see below) - lower the
-tolerance if this happens often, at the cost of the bootstrap rule kicking in more eagerly for a
-new person.
+This replaces a simpler nearest-known-weight scheme from an earlier version of this integration;
+the pure matching logic lives in
+[`custom_components/okok_scale/assignment.py`](custom_components/okok_scale/assignment.py) and is
+unit-tested in isolation in
+[`tests/test_session_engine.py`](tests/test_session_engine.py).
+
+**Known limitations**:
+- Two people whose weight *and* impedance are both very close together can still get confused -
+  the impedance axis and the weight×impedance tiebreak reduce this versus weight alone, but can't
+  eliminate it entirely. That's what the reassign select is for (see below).
+- A person who misses their registration window (see above) has no reference weight/impedance at
+  all. If everyone else in the household is already registered with a reference, step 5 above
+  never applies to them (their territory simply doesn't exist yet), so they can't be
+  auto-matched until you either remove and re-add them to arm a fresh capture window, or manually
+  fix their first mis-assigned weighing with the reassign select.
 
 ### Fixing a wrong guess
 
@@ -189,9 +206,9 @@ cards:
 - **No `text.py`/`number.py`**: the brief made these conditional on "if using entities" for
   registration input. We collect name/sex/age/height as an options-flow form instead (see
   "Registering people" above), so there are no helper input entities to define.
-- **Added `assignment.py`**: pure nearest-neighbour/arming logic, split out of `coordinator.py` so
-  the person-matching decision (section 3 of the brief) is unit-testable without a Home Assistant
-  runtime, same as the parser and formulas.
+- **Added `assignment.py`**: pure midpoint-interval matching/arming logic, split out of
+  `coordinator.py` so the person-matching decision (section 3 of the brief) is unit-testable
+  without a Home Assistant runtime, same as the parser and formulas.
 
 ## Development
 
@@ -212,8 +229,9 @@ relative imports (`from .const import ...`) that the real integration uses insid
   reference session decode (61.90 kg / impedance 6000).
 - `tests/test_body_composition.py` - all four body-fat formulas, BMI, lean mass, body water,
   clamping, and divide-by-zero guards.
-- `tests/test_session_engine.py` - registration-arming bypass, nearest-neighbour + bootstrap
-  matching, and CSV reassignment (row movement + recomputed refs).
+- `tests/test_session_engine.py` - registration-arming bypass, weight/impedance midpoint-interval
+  matching (agreement, disagreement + weight×impedance tiebreak, unseeded fallback), and CSV
+  reassignment (row movement + recomputed refs).
 
 ### Real Home Assistant integration tests
 

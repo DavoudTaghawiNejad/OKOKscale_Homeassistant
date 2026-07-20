@@ -32,6 +32,7 @@ def _person_to_dict(person: Person) -> dict[str, Any]:
         "activity_level": person.activity_level,
         "created": person.created,
         "ref_weight_kg": person.ref_weight_kg,
+        "ref_impedance": person.ref_impedance,
     }
 
 
@@ -45,6 +46,7 @@ def _person_from_dict(data: dict[str, Any]) -> Person:
         activity_level=data.get("activity_level", "normal"),
         created=data.get("created", ""),
         ref_weight_kg=data.get("ref_weight_kg"),
+        ref_impedance=data.get("ref_impedance"),
     )
 
 
@@ -97,13 +99,6 @@ class PersonStore:
 
     async def async_remove_person(self, person_id: str) -> None:
         self.people.pop(person_id, None)
-        await self.async_save()
-
-    async def async_set_ref_weight(self, person_id: str, weight_kg: float | None) -> None:
-        person = self.people.get(person_id)
-        if person is None:
-            return
-        person.ref_weight_kg = weight_kg
         await self.async_save()
 
     async def async_arm_registration(self, person_id: str, armed_at: float) -> None:

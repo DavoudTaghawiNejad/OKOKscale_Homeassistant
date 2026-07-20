@@ -31,11 +31,6 @@ SESSION_GAP_SECONDS = 60
 #: waiting for the next completed weighing session.
 REGISTRATION_ARMING_SECONDS = 120
 
-#: Default tolerance (kg) used to decide whether an incoming weight is
-#: "close enough" to a known person's reference weight to be assigned to
-#: them, versus being routed to a not-yet-seeded person.
-DEFAULT_MATCH_TOLERANCE_KG = 2.5
-
 # --- "Last measurement" headline sensor ------------------------------------
 
 #: How long (seconds) sensor.okok_scale_last_measurement keeps showing the
@@ -65,7 +60,6 @@ BODY_FAT_MAX_PCT = 70.0
 # --- Options flow keys -------------------------------------------------
 
 CONF_SCALE_MAC = "scale_mac"
-CONF_MATCH_TOLERANCE_KG = "match_tolerance_kg"
 CONF_BODY_FAT_FORMULA = "body_fat_formula"
 
 # --- Storage -------------------------------------------------------------
