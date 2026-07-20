@@ -97,14 +97,19 @@ class OkokScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OkokScaleOptionsFlow:
-        return OkokScaleOptionsFlow(config_entry)
+        return OkokScaleOptionsFlow()
 
 
 class OkokScaleOptionsFlow(config_entries.OptionsFlow):
-    """Add/edit/remove people, and tune matching + formula settings."""
+    """Add/edit/remove people, and tune matching + formula settings.
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        self.config_entry = config_entry
+    Note: `self.config_entry` is *not* set here - modern Home Assistant
+    exposes it as a read-only property (populated by the flow manager after
+    construction, valid from the first async_step_* call onward), so this
+    class must not assign to it itself.
+    """
+
+    def __init__(self) -> None:
         self._editing_person_id: str | None = None
         self._last_added_name: str | None = None
 
