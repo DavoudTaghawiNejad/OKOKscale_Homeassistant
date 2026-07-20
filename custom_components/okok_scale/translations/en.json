@@ -1,0 +1,101 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to your OKOK scale",
+        "description": "Enter (or pick) the Bluetooth MAC address of your scale.",
+        "data": {
+          "scale_mac": "Scale MAC address"
+        }
+      }
+    },
+    "error": {
+      "invalid_mac": "That doesn't look like a valid MAC address (expected e.g. F0:2C:59:F1:F0:28)."
+    },
+    "abort": {
+      "single_instance_allowed": "Only one OKOK scale can be configured.",
+      "already_configured": "This scale is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "OKOK Scale settings",
+        "menu_options": {
+          "add_person": "Add a person",
+          "edit_person": "Edit a person",
+          "remove_person": "Remove a person",
+          "settings": "Matching & formula settings"
+        }
+      },
+      "add_person": {
+        "title": "Add a person",
+        "description": "This creates their sensors right away, in an \"unknown\" state until they've been weighed.",
+        "data": {
+          "name": "Name",
+          "sex": "Sex",
+          "age_years": "Age (years)",
+          "height_cm": "Height (cm)"
+        }
+      },
+      "add_person_done": {
+        "title": "Step on the scale now",
+        "description": "Have **{name}** step on the scale within the next {window_seconds} seconds - that weighing is captured as their first reference weight, bypassing the usual nearest-weight matching. If nobody steps on in time, {name} is still saved and will be matched automatically the next time they're weighed."
+      },
+      "edit_person": {
+        "title": "Edit a person",
+        "data": {
+          "person_id": "Person"
+        }
+      },
+      "edit_person_details": {
+        "title": "Edit {name}",
+        "data": {
+          "name": "Name",
+          "sex": "Sex",
+          "age_years": "Age (years)",
+          "height_cm": "Height (cm)"
+        }
+      },
+      "remove_person": {
+        "title": "Remove a person",
+        "description": "Their CSV history is kept on disk; only the entities and registration are removed.",
+        "data": {
+          "person_id": "Person"
+        }
+      },
+      "settings": {
+        "title": "Matching & formula settings",
+        "data": {
+          "scale_mac": "Scale MAC address",
+          "match_tolerance_kg": "Match tolerance (kg)",
+          "body_fat_formula": "Body-fat formula"
+        },
+        "data_description": {
+          "match_tolerance_kg": "How close (in kg) a weighing must be to someone's last known weight to be auto-assigned to them, instead of to a not-yet-seeded person.",
+          "body_fat_formula": "All options are BMI/age/sex based (see README) - the scale's impedance reading is logged but not used by any of them."
+        }
+      }
+    },
+    "abort": {
+      "no_people": "There are no registered people yet - add one first."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "weight": { "name": "Weight" },
+      "body_fat": { "name": "Body fat" },
+      "lean_mass": { "name": "Lean mass" },
+      "body_water": { "name": "Body water" },
+      "impedance": { "name": "Impedance" },
+      "bmi": { "name": "BMI" },
+      "last_measurement": { "name": "Last measurement" }
+    },
+    "select": {
+      "reassign_last": { "name": "Reassign last measurement" }
+    },
+    "button": {
+      "download_csv": { "name": "Download CSV" }
+    }
+  }
+}

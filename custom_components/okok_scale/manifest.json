@@ -1,0 +1,18 @@
+{
+  "domain": "okok_scale",
+  "name": "OKOK Body Composition Scale",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["bluetooth", "bluetooth_adapters"],
+  "iot_class": "local_push",
+  "bluetooth": [
+    { "manufacturer_id": 448, "connectable": false },
+    { "manufacturer_id": 704, "connectable": false },
+    { "manufacturer_id": 960, "connectable": false },
+    { "manufacturer_id": 1216, "connectable": false },
+    { "manufacturer_id": 1472, "connectable": false }
+  ],
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
