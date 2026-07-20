@@ -80,7 +80,7 @@
     },
     "abort": {
       "no_people": "There are no registered people yet - add one first.",
-      "registration_timed_out": "{name} didn't step on the scale in time, so no reference weight/impedance was captured. They're still saved, but matching needs both to work - if anyone else in the household is already registered with a reference, {name} won't be auto-matched until you remove and re-add them to try again, or use the reassign select to manually correct their next weighing."
+      "registration_timed_out": "{name} didn't step on the scale in time, so no reference weight/impedance was captured. They're still saved, but matching needs both to work - if anyone else in the household is already registered with a reference, {name} won't be auto-matched until you press their \"Arm capture\" button to try again, or use the reassign select to manually correct their next weighing."
     }
   },
   "entity": {
@@ -97,7 +97,8 @@
       "reassign_last": { "name": "Reassign last measurement" }
     },
     "button": {
-      "download_csv": { "name": "Download CSV" }
+      "download_csv": { "name": "Download CSV" },
+      "arm_capture": { "name": "Arm capture" }
     }
   }
 }

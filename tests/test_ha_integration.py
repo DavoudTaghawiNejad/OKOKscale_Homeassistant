@@ -56,7 +56,7 @@ def _patch_bluetooth_adapter_history():
 
 
 @pytest.fixture
-def okok_hass(hass, enable_custom_integrations, enable_bluetooth, tmp_path):
+async def okok_hass(hass, enable_custom_integrations, enable_bluetooth, tmp_path):
     """A test `hass` whose config_dir sees our real custom_components/.
 
     We symlink tmp_path/custom_components -> the real custom_components/
@@ -65,10 +65,15 @@ def okok_hass(hass, enable_custom_integrations, enable_bluetooth, tmp_path):
     tmp_path instead of polluting the repo. `enable_bluetooth` mocks out
     the real bleak scanner / adapter discovery so the "bluetooth" /
     "bluetooth_adapters" dependencies our manifest declares don't try to
-    talk to real hardware.
+    talk to real hardware. `persistent_notification` is always loaded in
+    a real Home Assistant instance but not by this minimal test hass, and
+    our download/arm-capture buttons call that service.
     """
     (tmp_path / "custom_components").symlink_to(REAL_CUSTOM_COMPONENTS, target_is_directory=True)
     hass.config.config_dir = str(tmp_path)
+    from homeassistant.setup import async_setup_component
+
+    assert await async_setup_component(hass, "persistent_notification", {})
     return hass
 
 
@@ -85,6 +90,10 @@ F_7800_LOCKED = (0x01C0, "1e78157c0a0125f02c59f1f028")
 # function, not just by construction) even though it was actually the wife.
 F_7000_LOCKED = (0x02C0, "1b5813880a0125f02c59f1f028")  # 70.00 kg, impedance 5000
 F_6300_LOCKED = (0x03C0, "189c170c0a0125f02c59f1f028")  # 63.00 kg, impedance 5900
+# Synthetic 58.00 kg / impedance 4000 locked frame, well clear of "me"'s
+# 61.9 kg / 6000 ohm reference - used to prove an unseeded second person's
+# real weigh-in reaches them once they're armed (button.*_arm_capture).
+F_5800_LOCKED = (0x04C0, "16a80fa00a0125f02c59f1f028")
 
 
 def _build_session(mfr_id: int, payload_hex: str, now: float):
@@ -347,3 +356,56 @@ async def test_add_person_done_times_out_with_error(configured_entry) -> None:
     coordinator = _coordinator(hass, entry)
     assert "me" in coordinator.people
     assert coordinator.people["me"].ref_weight_kg is None
+
+
+async def test_arm_capture_button_fixes_a_person_who_missed_registration(configured_entry) -> None:
+    """Reproduces and fixes the reported bug: a person who missed their
+    registration window isn't just unmatched for that one weighing - every
+    subsequent real weigh-in of theirs silently goes to whoever's already
+    seeded, because the matching algorithm has no fallback once anyone else
+    has a reference. button.okok_scale_<person>_arm_capture is the fix.
+    """
+    hass, entry = configured_entry
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_add_person(name="Me", sex="male", age_years=40, height_cm=178)
+    await coordinator.async_add_person(name="Wife", sex="female", age_years=38, height_cm=165)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = _coordinator(hass, entry)
+
+    # "Me" gets seeded; "Wife" never steps on (her registration arming, if
+    # any, has already lapsed - we don't even bother arming her here).
+    await coordinator.async_arm_registration("me")
+    await coordinator._async_finish_session(_build_session(*F_6190_LOCKED, now=1000.0))
+    await hass.async_block_till_done()
+    assert coordinator.people["wife"].ref_weight_kg is None
+
+    # Bug reproduction: wife's own real weigh-in (58 kg/4000 ohm, nowhere
+    # near "me"'s 61.9 kg/6000 ohm) still gets silently assigned to "me",
+    # since she has no interval of her own to fall into.
+    await coordinator._async_finish_session(_build_session(*F_5800_LOCKED, now=2000.0))
+    await hass.async_block_till_done()
+    assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(58.0)
+    assert hass.states.get("sensor.okok_scale_wife_weight").state in ("unknown", None)
+
+    # Fix: press her arm-capture button, then she steps on for real.
+    assert "button.okok_scale_wife_arm_capture" in hass.states.async_entity_ids()
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.okok_scale_wife_arm_capture"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert coordinator.store.pending_registration is not None
+    assert coordinator.store.pending_registration["person_id"] == "wife"
+
+    await coordinator._async_finish_session(_build_session(*F_5800_LOCKED, now=3000.0))
+    await hass.async_block_till_done()
+
+    assert float(hass.states.get("sensor.okok_scale_wife_weight").state) == pytest.approx(58.0)
+    assert coordinator.people["wife"].ref_weight_kg == pytest.approx(58.0)
+    assert coordinator.people["wife"].ref_impedance == 4000
+
+    # Now that she's seeded, her own weighings reach her correctly, unarmed.
+    await coordinator._async_finish_session(_build_session(*F_5800_LOCKED, now=4000.0))
+    await hass.async_block_till_done()
+    assert float(hass.states.get("sensor.okok_scale_wife_weight").state) == pytest.approx(58.0)

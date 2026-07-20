@@ -75,11 +75,20 @@ unit-tested in isolation in
 - Two people whose weight *and* impedance are both very close together can still get confused -
   the impedance axis and the weight×impedance tiebreak reduce this versus weight alone, but can't
   eliminate it entirely. That's what the reassign select is for (see below).
-- A person who misses their registration window (see above) has no reference weight/impedance at
-  all. If everyone else in the household is already registered with a reference, step 5 above
-  never applies to them (their territory simply doesn't exist yet), so they can't be
-  auto-matched until you either remove and re-add them to arm a fresh capture window, or manually
-  fix their first mis-assigned weighing with the reassign select.
+- A person who has no reference weight/impedance at all (never weighed, or missed their
+  registration window) can't be auto-matched once anyone else in the household is registered with
+  a reference - step 5 above only applies while *nobody* is seeded yet, so every one of their
+  weighings would otherwise silently go to somebody else, not just the first one. Fix this with
+  `button.okok_scale_<person>_arm_capture` (see below) - it opens the exact same 120-second capture
+  window as registration, without needing to remove and re-add them.
+
+### Re-arming a person's capture window
+
+`button.okok_scale_<person>_arm_capture` opens a fresh 120-second unconditional-capture window for
+that specific person, exactly like submitting "Add a person" does. Press it, then have them step
+on the scale. This is the fix for the limitation above, and also works any time you want to
+force-correct someone's reference (e.g. after a long gap, or a big genuine weight change) without
+waiting for the matching algorithm to catch up on its own.
 
 ### Fixing a wrong guess
 
@@ -145,6 +154,8 @@ Per registered person (`<person>` = their slugified id):
 - `sensor.okok_scale_<person>_impedance` (raw, diagnostic)
 - `sensor.okok_scale_<person>_bmi`
 - `button.okok_scale_<person>_download_csv` - posts a persistent notification with the CSV link
+- `button.okok_scale_<person>_arm_capture` - opens a fresh 120 s reference-capture window (see
+  "Re-arming a person's capture window" above)
 
 Integration-wide:
 
