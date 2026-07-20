@@ -93,10 +93,10 @@ Pick the body-fat formula in Configure -> Settings (`body_fat_formula`):
 
 | Formula | Notes |
 |---|---|
-| `deurenberg1991` (default) | Deurenberg et al. 1991 |
+| `deurenberg1991` | Deurenberg et al. 1991 |
 | `deurenberg1992` | Deurenberg et al. 1992, separate child (<16) formula |
 | `eddy1976` | Eddy et al. 1976 |
-| `gallagher2000` | Gallagher et al. 2000 (non-Asian) |
+| `gallagher2000` (default) | Gallagher et al. 2000 (non-Asian) |
 
 All four are sourced from the [openScale wiki's "Body metric
 estimations"](https://github.com/oliexdev/openScale/wiki/Bodymetric-estimation-formulas) page.

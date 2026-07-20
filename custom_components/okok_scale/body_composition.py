@@ -26,6 +26,7 @@ from __future__ import annotations
 from .const import (
     BODY_FAT_MAX_PCT,
     BODY_FAT_MIN_PCT,
+    DEFAULT_BODY_FAT_FORMULA,
     FORMULA_DEURENBERG_1991,
     FORMULA_DEURENBERG_1992,
     FORMULA_EDDY_1976,
@@ -95,13 +96,13 @@ def calc_body_fat_pct(
     age_years: float,
     sex: Sex,
     impedance: int | None = None,  # noqa: ARG001 - intentionally unused, see module docstring
-    formula: str = FORMULA_DEURENBERG_1991,
+    formula: str = DEFAULT_BODY_FAT_FORMULA,
 ) -> float | None:
     """Estimated body-fat percentage, clamped to a plausible range."""
     bmi = _raw_bmi(weight_kg, height_cm)
     if bmi is None:
         return None
-    fn = _FORMULA_DISPATCH.get(formula, _FORMULA_DISPATCH[FORMULA_DEURENBERG_1991])
+    fn = _FORMULA_DISPATCH.get(formula, _FORMULA_DISPATCH[DEFAULT_BODY_FAT_FORMULA])
     pct = fn(bmi, age_years, sex)
     return round(_clamp_body_fat(pct), 1)
 
@@ -138,7 +139,7 @@ def compute_body_composition(
     age_years: float,
     sex: Sex,
     impedance: int | None = None,
-    formula: str = FORMULA_DEURENBERG_1991,
+    formula: str = DEFAULT_BODY_FAT_FORMULA,
 ) -> dict[str, float | None]:
     """Convenience bundle of every derived metric for one weight reading."""
     bmi = calc_bmi(weight_kg, height_cm)

@@ -73,8 +73,11 @@ def test_body_fat_clamped_to_plausible_range() -> None:
     low = calc_body_fat_pct(weight_kg=40.0, height_cm=200, age_years=10, sex="male")
     assert low == BODY_FAT_MIN_PCT
 
-    # Absurdly high BMI should clamp at the ceiling, not exceed 100%.
-    high = calc_body_fat_pct(weight_kg=250.0, height_cm=150, age_years=90, sex="female")
+    # Absurdly high BMI/age should clamp at the ceiling, not exceed 100%.
+    # (Extreme enough to clamp under every formula, not just the default -
+    # Gallagher's 1/bmi term makes it converge much more slowly than the
+    # other formulas' linear terms, so a merely-high BMI isn't enough.)
+    high = calc_body_fat_pct(weight_kg=400.0, height_cm=100, age_years=200, sex="female")
     assert high == BODY_FAT_MAX_PCT
 
 
@@ -83,7 +86,9 @@ def test_body_fat_guards_divide_by_zero() -> None:
 
 
 def test_fat_mass_and_lean_mass_male() -> None:
-    bf = calc_body_fat_pct(**MALE)  # 16.4
+    # Pinned to a specific formula (not the default) so this test doesn't
+    # silently start asserting different numbers if the default changes.
+    bf = calc_body_fat_pct(**MALE, formula=FORMULA_DEURENBERG_1991)  # 16.4
     fat_mass = calc_fat_mass_kg(MALE["weight_kg"], bf)
     lean_mass = calc_lean_mass_kg(MALE["weight_kg"], bf)
     assert fat_mass == pytest.approx(10.2)
@@ -111,11 +116,13 @@ def test_body_water_pct_guards_divide_by_zero() -> None:
     assert calc_body_water_pct(70.0, 0, "male") is None
 
 
-def test_compute_body_composition_bundle() -> None:
+def test_compute_body_composition_bundle_uses_default_formula() -> None:
+    # No `formula=` passed - exercises that DEFAULT_BODY_FAT_FORMULA
+    # (gallagher2000) is actually what gets applied when omitted.
     result = compute_body_composition(**MALE, impedance=6000)
     assert result == {
         "bmi": 19.5,
-        "body_fat_pct": 16.4,
-        "lean_mass_kg": 51.7,
+        "body_fat_pct": 11.9,
+        "lean_mass_kg": 54.5,
         "body_water_pct": 63.1,
     }
