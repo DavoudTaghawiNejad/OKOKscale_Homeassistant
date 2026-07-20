@@ -1,10 +1,17 @@
 """Sensor platform for OKOK Body Composition Scale.
 
-Six sensors per registered person (weight, body fat, lean mass, body
-water, impedance, BMI) holding that person's latest weighing, plus one
-integration-wide "last measurement" sensor that names whoever was most
-recently weighed and blanks itself after
+Two sensors per registered person - weight, and body fat relative to their
+personal baseline (100% = baseline; see coordinator.py /
+body_composition.py for how the baseline itself is established/updated) -
+plus one integration-wide "last measurement" sensor that names whoever was
+most recently weighed and blanks itself after
 const.LAST_MEASUREMENT_TIMEOUT_SECONDS.
+
+Only weight and the baseline-relative body-fat figure are exposed as
+entities. The scale's absolute body-fat estimate isn't calibrated (see
+body_composition.py's module docstring), so it's kept internal - available
+as an attribute on the relative sensor for transparency, but not promoted
+to its own card/sensor.
 
 Entities are push-updated via dispatcher signals fired by
 coordinator.OkokScaleCoordinator - there's no polling here.
@@ -26,10 +33,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfMass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import BASELINE_MEASUREMENT_COUNT, DOMAIN
 from .coordinator import SIGNAL_LAST_MEASUREMENT_UPDATED, SIGNAL_PERSON_UPDATED, OkokScaleCoordinator
 from .models import Person
 
@@ -50,45 +56,12 @@ PERSON_SENSOR_DESCRIPTIONS: tuple[OkokPersonSensorDescription, ...] = (
         value_fn=lambda data: data.get("weight_kg"),
     ),
     OkokPersonSensorDescription(
-        key="body_fat",
-        translation_key="body_fat",
+        key="body_fat_relative",
+        translation_key="body_fat_relative",
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
         suggested_display_precision=1,
-        value_fn=lambda data: data.get("body_fat_pct"),
-    ),
-    OkokPersonSensorDescription(
-        key="lean_mass",
-        translation_key="lean_mass",
-        device_class=SensorDeviceClass.WEIGHT,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfMass.KILOGRAMS,
-        suggested_display_precision=1,
-        value_fn=lambda data: data.get("lean_mass_kg"),
-    ),
-    OkokPersonSensorDescription(
-        key="body_water",
-        translation_key="body_water",
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=PERCENTAGE,
-        suggested_display_precision=1,
-        value_fn=lambda data: data.get("body_water_pct"),
-    ),
-    OkokPersonSensorDescription(
-        key="impedance",
-        translation_key="impedance",
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement="Ω",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=True,
-        value_fn=lambda data: data.get("impedance"),
-    ),
-    OkokPersonSensorDescription(
-        key="bmi",
-        translation_key="bmi",
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        value_fn=lambda data: data.get("bmi"),
+        value_fn=lambda data: data.get("body_fat_relative_pct"),
     ),
 )
 
@@ -108,7 +81,7 @@ async def async_setup_entry(
 
 
 class OkokScalePersonSensor(SensorEntity):
-    """One body-composition metric for one registered person."""
+    """One metric (weight or relative body fat) for one registered person."""
 
     _attr_has_entity_name = True
     _attr_should_poll = False
@@ -136,9 +109,21 @@ class OkokScalePersonSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        if self.entity_description.key != "weight":
-            return None
-        return {"csv_download_url": self._coordinator.csv_download_url(self._person_id)}
+        if self.entity_description.key == "weight":
+            return {"csv_download_url": self._coordinator.csv_download_url(self._person_id)}
+        if self.entity_description.key == "body_fat_relative":
+            person = self._coordinator.people.get(self._person_id)
+            data = self._coordinator.person_data.get(self._person_id) or {}
+            history_count = len(person.recent_body_fat_history) if person is not None else 0
+            baseline = person.baseline_body_fat_pct if person is not None else None
+            return {
+                "baseline_body_fat_pct": baseline,
+                "absolute_body_fat_pct": data.get("body_fat_pct"),
+                "measurements_until_baseline": (
+                    max(0, BASELINE_MEASUREMENT_COUNT - history_count) if baseline is None else 0
+                ),
+            }
+        return None
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(

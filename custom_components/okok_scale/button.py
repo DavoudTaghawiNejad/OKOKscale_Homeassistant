@@ -38,6 +38,7 @@ async def async_setup_entry(
     for person in coordinator.people.values():
         entities.append(OkokScaleDownloadCsvButton(coordinator, person))
         entities.append(OkokScaleArmCaptureButton(coordinator, person))
+        entities.append(OkokScaleResetBaselineButton(coordinator, person))
     async_add_entities(entities)
 
 
@@ -103,6 +104,47 @@ class OkokScaleArmCaptureButton(ButtonEntity):
                     f"have {self._person_name} step on the scale now."
                 ),
                 "notification_id": f"{DOMAIN}_{self._person_id}_arm_capture",
+            },
+            blocking=False,
+        )
+
+
+class OkokScaleResetBaselineButton(ButtonEntity):
+    """Pressing this sets this person's body-fat baseline (100% reference
+    point) to the average of their most recent measurements.
+
+    See sensor.py's body_fat_relative sensor and
+    coordinator.async_reset_baseline. Useful any time you want to reset
+    "100%" to where they are now, e.g. at the start of a new fitness phase.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "reset_baseline"
+    _attr_icon = "mdi:chart-timeline-variant"
+
+    def __init__(self, coordinator: OkokScaleCoordinator, person: Person) -> None:
+        self._coordinator = coordinator
+        self._person_id = person.id
+        self._person_name = person.name
+        self._attr_unique_id = f"{DOMAIN}_{person.id}_reset_baseline"
+        self.entity_id = f"button.{DOMAIN}_{person.id}_reset_baseline"
+        self._attr_device_info = coordinator.person_device_info(person)
+
+    async def async_press(self) -> None:
+        ok = await self._coordinator.async_reset_baseline(self._person_id)
+        message = (
+            f"{self._person_name}'s baseline has been reset to their recent average - "
+            "it's now their new 100%."
+            if ok
+            else f"{self._person_name} has no measurements yet, so there's nothing to set a baseline from."
+        )
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": f"OKOK Scale: {self._person_name}",
+                "message": message,
+                "notification_id": f"{DOMAIN}_{self._person_id}_reset_baseline",
             },
             blocking=False,
         )

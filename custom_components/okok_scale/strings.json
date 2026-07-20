@@ -30,7 +30,7 @@
       },
       "add_person": {
         "title": "Add a person",
-        "description": "This creates their sensors right away, in an \"unknown\" state until they've been weighed.",
+        "description": "Nothing is saved yet - the next step arms a capture window, and the profile is only created once a weighing actually comes in.",
         "data": {
           "name": "Name",
           "sex": "Sex",
@@ -40,7 +40,7 @@
       },
       "add_person_done": {
         "title": "Step on the scale now",
-        "description": "Have **{name}** step on the scale now - that weighing is captured as their first reference weight and reference impedance, bypassing the usual weight/impedance matching. {seconds_left} seconds left. Click **Submit** once they've stepped on to finish, or again later to check - this dialog won't close until it's captured."
+        "description": "Have **{name}** step on the scale now. {live_reading} {seconds_left} seconds left. Once the reading locks, this dialog closes on its own and *then* creates {name}'s profile - nothing is saved before that. Click Submit to check now, or again later."
       },
       "edit_person": {
         "title": "Edit a person",
@@ -71,7 +71,7 @@
           "body_fat_formula": "Body-fat formula"
         },
         "data_description": {
-          "body_fat_formula": "All options are BMI/age/sex based (see README) - the scale's impedance reading is logged and used to help identify who's weighing in, but not by any of the body-fat formulas themselves."
+          "body_fat_formula": "Used internally as an input to each person's body-fat baseline - not shown directly (see README). All options are BMI/age/sex based; the scale's impedance reading isn't used by any of them."
         }
       }
     },
@@ -80,17 +80,13 @@
     },
     "abort": {
       "no_people": "There are no registered people yet - add one first.",
-      "registration_timed_out": "{name} didn't step on the scale in time, so no reference weight/impedance was captured. They're still saved, but matching needs both to work - if anyone else in the household is already registered with a reference, {name} won't be auto-matched until you press their \"Arm capture\" button to try again, or use the reassign select to manually correct their next weighing."
+      "registration_timed_out": "{name} didn't step on the scale in time, so nothing was saved - no profile was created. Start again with \"Add a person\" if you still want to register them."
     }
   },
   "entity": {
     "sensor": {
       "weight": { "name": "Weight" },
-      "body_fat": { "name": "Body fat" },
-      "lean_mass": { "name": "Lean mass" },
-      "body_water": { "name": "Body water" },
-      "impedance": { "name": "Impedance" },
-      "bmi": { "name": "BMI" },
+      "body_fat_relative": { "name": "Body fat (relative to baseline)" },
       "last_measurement": { "name": "Last measurement" }
     },
     "select": {
@@ -98,7 +94,8 @@
     },
     "button": {
       "download_csv": { "name": "Download CSV" },
-      "arm_capture": { "name": "Arm capture" }
+      "arm_capture": { "name": "Arm capture" },
+      "reset_baseline": { "name": "Reset baseline" }
     }
   }
 }

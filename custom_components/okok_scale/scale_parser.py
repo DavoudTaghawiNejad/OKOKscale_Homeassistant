@@ -34,6 +34,7 @@ from .const import (
     PAYLOAD_LENGTH,
     SESSION_GAP_SECONDS,
     STABLE_FLAG_BIT,
+    STABLE_SESSION_GAP_SECONDS,
 )
 from .models import ScaleFrame
 
@@ -98,6 +99,11 @@ class Session:
         self.last_update_at = now
 
     @property
+    def has_stable_frame(self) -> bool:
+        """Whether any frame seen so far has the locked/stable flag set."""
+        return any(f.stable for f in self.frames)
+
+    @property
     def final_frame(self) -> ScaleFrame:
         """The frame that should be treated as the session's result.
 
@@ -118,12 +124,28 @@ class SessionAssembler:
     that finished cleanly is only detected on the *next* weigh-in's first
     frame unless the caller also polls `check_timeout()` on a periodic
     timer to close out a session in near-real-time.
+
+    The gap that counts as "finished" shrinks once the session has seen a
+    locked (stable) frame: waiting the full, generous SESSION_GAP_SECONDS
+    after the reading has already locked serves no purpose beyond making
+    everything downstream (the last-measurement sensor, CSV logging, the
+    "add person" dialog) feel unresponsive for up to a minute. See
+    STABLE_SESSION_GAP_SECONDS.
     """
 
-    def __init__(self, mac: str, gap_seconds: float = SESSION_GAP_SECONDS) -> None:
+    def __init__(
+        self,
+        mac: str,
+        gap_seconds: float = SESSION_GAP_SECONDS,
+        stable_gap_seconds: float = STABLE_SESSION_GAP_SECONDS,
+    ) -> None:
         self._mac_bytes = mac_str_to_bytes(mac)
         self._gap_seconds = gap_seconds
+        self._stable_gap_seconds = stable_gap_seconds
         self.current: Session | None = None
+
+    def _effective_gap(self, session: Session) -> float:
+        return self._stable_gap_seconds if session.has_stable_frame else self._gap_seconds
 
     def ingest(self, manufacturer_data: Mapping[int, bytes], now: float) -> Session | None:
         """Process one accumulated manufacturer_data snapshot.
@@ -143,7 +165,7 @@ class SessionAssembler:
             if self.current is not None and self.current.has_seen(mfr_id, payload):
                 continue  # already accounted for, doesn't affect timing
 
-            if self.current is not None and (now - self.current.last_update_at) > self._gap_seconds:
+            if self.current is not None and (now - self.current.last_update_at) > self._effective_gap(self.current):
                 completed = self.current
                 self.current = None
 
@@ -162,7 +184,7 @@ class SessionAssembler:
         ever arrive) gets finalized instead of waiting indefinitely for a
         "next" frame that will only show up at the next weigh-in.
         """
-        if self.current is not None and (now - self.current.last_update_at) > self._gap_seconds:
+        if self.current is not None and (now - self.current.last_update_at) > self._effective_gap(self.current):
             completed = self.current
             self.current = None
             return completed

@@ -145,10 +145,8 @@ class TestCsvReassignment:
                 "session_id": "sess-1",
                 "weight_kg": 61.9,
                 "impedance": 6000,
-                "bmi": 19.5,
                 "body_fat_pct": 16.4,
-                "lean_mass_kg": 51.7,
-                "body_water_pct": 63.1,
+                "body_fat_relative_pct": 100.0,
             },
         )
         append_row(
@@ -158,10 +156,8 @@ class TestCsvReassignment:
                 "session_id": "sess-2",
                 "weight_kg": 78.0,
                 "impedance": 5200,
-                "bmi": 24.6,
                 "body_fat_pct": 20.0,
-                "lean_mass_kg": 62.4,
-                "body_water_pct": 55.0,
+                "body_fat_relative_pct": 122.0,
             },
         )
 
@@ -172,17 +168,43 @@ class TestCsvReassignment:
             target_height_cm=165,
             target_age_years=38,
             target_sex="female",
+            target_baseline_body_fat_pct=30.0,
         )
 
         assert len(moved) == 1
         assert moved[0]["weight_kg"] == 78.0
         # Body composition must be recomputed for the *wife*, not "me".
         assert moved[0]["body_fat_pct"] == pytest.approx(37.9, abs=0.2)
+        # ... and body_fat_relative_pct against *her* baseline, not
+        # whatever it happened to be under "me" (122.0 above).
+        assert moved[0]["body_fat_relative_pct"] == pytest.approx(126.3, abs=0.5)
 
         # "me"'s CSV now ends with their own earlier, correct session.
         assert read_last_weight_kg(me_csv) == pytest.approx(61.9)
         # "wife"'s CSV now has the moved session as her only/last row.
         assert read_last_weight_kg(wife_csv) == pytest.approx(78.0)
+
+    def test_reassign_without_a_target_baseline_yet(self, tmp_path: Path) -> None:
+        """A brand new target person has no baseline yet - the moved row's
+        relative pct must be None (unknown), not a division-by-nothing
+        crash or a stale/wrong number."""
+        me_csv = tmp_path / "me.csv"
+        wife_csv = tmp_path / "wife.csv"
+        append_row(
+            me_csv,
+            {
+                "time": "2026-07-19T08:00:00",
+                "session_id": "sess-1",
+                "weight_kg": 78.0,
+                "impedance": 5200,
+                "body_fat_pct": 20.0,
+                "body_fat_relative_pct": 100.0,
+            },
+        )
+        moved = reassign_session(
+            me_csv, wife_csv, "sess-1", target_height_cm=165, target_age_years=38, target_sex="female"
+        )
+        assert moved[0]["body_fat_relative_pct"] is None
 
     def test_reassign_nonexistent_session_is_a_noop(self, tmp_path: Path) -> None:
         me_csv = tmp_path / "me.csv"
@@ -194,10 +216,8 @@ class TestCsvReassignment:
                 "session_id": "sess-1",
                 "weight_kg": 61.9,
                 "impedance": 6000,
-                "bmi": 19.5,
                 "body_fat_pct": 16.4,
-                "lean_mass_kg": 51.7,
-                "body_water_pct": 63.1,
+                "body_fat_relative_pct": 100.0,
             },
         )
         moved = reassign_session(

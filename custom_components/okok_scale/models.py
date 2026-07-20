@@ -25,6 +25,14 @@ class Person:
     created: str = ""
     ref_weight_kg: float | None = None
     ref_impedance: int | None = None
+    #: Personal body-fat baseline (100% reference point) - the average of
+    #: recent_body_fat_history at the time it was last (re)established.
+    #: None until BASELINE_MEASUREMENT_COUNT measurements exist.
+    baseline_body_fat_pct: float | None = None
+    #: Rolling window of this person's most recent absolute body-fat%
+    #: readings, capped at BASELINE_MEASUREMENT_COUNT. Source data for both
+    #: the automatic first-time baseline and "reset baseline".
+    recent_body_fat_history: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -53,8 +61,6 @@ class Measurement:
     weight_kg: float
     impedance: int
     person_id: str | None = None
-    bmi: float | None = None
     body_fat_pct: float | None = None
-    lean_mass_kg: float | None = None
-    body_water_pct: float | None = None
+    body_fat_relative_pct: float | None = None
     frames: list[ScaleFrame] = field(default_factory=list)

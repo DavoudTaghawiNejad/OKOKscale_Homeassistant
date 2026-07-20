@@ -33,6 +33,8 @@ def _person_to_dict(person: Person) -> dict[str, Any]:
         "created": person.created,
         "ref_weight_kg": person.ref_weight_kg,
         "ref_impedance": person.ref_impedance,
+        "baseline_body_fat_pct": person.baseline_body_fat_pct,
+        "recent_body_fat_history": person.recent_body_fat_history,
     }
 
 
@@ -47,6 +49,8 @@ def _person_from_dict(data: dict[str, Any]) -> Person:
         created=data.get("created", ""),
         ref_weight_kg=data.get("ref_weight_kg"),
         ref_impedance=data.get("ref_impedance"),
+        baseline_body_fat_pct=data.get("baseline_body_fat_pct"),
+        recent_body_fat_history=list(data.get("recent_body_fat_history") or []),
     )
 
 
@@ -101,7 +105,13 @@ class PersonStore:
         self.people.pop(person_id, None)
         await self.async_save()
 
-    async def async_arm_registration(self, person_id: str, armed_at: float) -> None:
+    async def async_arm_registration(self, person_id: str | None, armed_at: float) -> None:
+        """Arm the next completed weighing for unconditional capture.
+
+        `person_id=None` means an anonymous capture for a not-yet-created
+        person (the "Add person" dialog) - see
+        coordinator.async_complete_pending_capture.
+        """
         self.pending_registration = {"person_id": person_id, "armed_at": armed_at}
         await self.async_save()
 

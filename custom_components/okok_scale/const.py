@@ -22,14 +22,28 @@ DEFAULT_SCALE_MAC = "F0:2C:59:F1:F0:28"
 STABLE_FLAG_BIT = 0x01
 
 #: A gap of more than this many seconds between two valid frames from the
-#: scale starts a new weighing session.
+#: scale starts a new weighing session. Used while the session hasn't
+#: locked yet (no stable frame seen), so a slow-to-settle scale still gets
+#: a generous window.
 SESSION_GAP_SECONDS = 60
+
+#: Once a session has seen a stable (locked) frame, a much shorter gap is
+#: enough to consider it finished - waiting the full SESSION_GAP_SECONDS
+#: after the reading has already locked serves no purpose except making
+#: every dependent feature (the "add person" dialog, the last-measurement
+#: sensor, CSV logging) feel unresponsive for up to a minute.
+STABLE_SESSION_GAP_SECONDS = 3
 
 # --- Person registration ---------------------------------------------------
 
 #: How long (seconds) a "register new person" arming window stays open
 #: waiting for the next completed weighing session.
 REGISTRATION_ARMING_SECONDS = 120
+
+#: How many of a person's most recent weighings make up their body-fat
+#: baseline (both the automatic first-time baseline and what "reset
+#: baseline" recomputes from).
+BASELINE_MEASUREMENT_COUNT = 5
 
 # --- "Last measurement" headline sensor ------------------------------------
 
@@ -79,13 +93,22 @@ STATIC_CSV_URL_PATH = "/api/okok_scale/csv"
 REASSIGN_MAX_AGE_SECONDS = 3600
 
 #: CSV column header, also used as the canonical row-dict key order.
+#: body_fat_pct is the absolute (unrelative-ized, uncalibrated) estimate;
+#: body_fat_relative_pct is that same value expressed against the
+#: person's baseline (100% = baseline average). See body_composition.py
+#: and coordinator.py for how each is derived.
 CSV_FIELDNAMES = [
     "time",
     "session_id",
     "weight_kg",
     "impedance",
-    "bmi",
     "body_fat_pct",
-    "lean_mass_kg",
-    "body_water_pct",
+    "body_fat_relative_pct",
 ]
+
+# --- Diagnostics -----------------------------------------------------------
+
+#: Shown as the hub device's software-version in its Home Assistant device
+#: info panel, so you can confirm which build is actually running after an
+#: update. Set to the timestamp of the last `git push` to main.
+BUILD_TIMESTAMP = "2026-07-20T14:00:00Z"

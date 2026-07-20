@@ -24,8 +24,10 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from .assignment import is_registration_armed, match_person
-from .body_composition import compute_body_composition
+from .body_composition import calc_baseline_body_fat_pct, calc_body_fat_pct, calc_relative_body_fat_pct
 from .const import (
+    BASELINE_MEASUREMENT_COUNT,
+    BUILD_TIMESTAMP,
     CONF_BODY_FAT_FORMULA,
     CONF_SCALE_MAC,
     CSV_DIR_NAME,
@@ -35,6 +37,7 @@ from .const import (
     REASSIGN_MAX_AGE_SECONDS,
     REGISTRATION_ARMING_SECONDS,
     SESSION_GAP_SECONDS,
+    STABLE_SESSION_GAP_SECONDS,
 )
 from .csv_logger import CsvLogger
 from .models import Person
@@ -75,6 +78,14 @@ class OkokScaleCoordinator:
         self.person_data: dict[str, dict[str, Any]] = {}
         #: the current value of sensor.okok_scale_last_measurement, or None
         self.last_measurement: dict[str, Any] | None = None
+        #: A session captured for an armed *anonymous* registration (the
+        #: "Add person" dialog arms before a Person exists yet) that hasn't
+        #: been turned into a person by async_complete_pending_capture yet.
+        self.pending_capture_session: Session | None = None
+        #: Best-effort live peek at the in-progress session's latest frame,
+        #: updated on every advertisement regardless of session completion -
+        #: lets the "Add person" dialog show a reading before it locks.
+        self.live_reading: dict[str, Any] | None = None
 
         self._unregister_ble: Callable[[], None] | None = None
         self._timeout_cancel: Callable[[], None] | None = None
@@ -95,6 +106,7 @@ class OkokScaleCoordinator:
             name="OKOK Body Composition Scale",
             manufacturer="Chipsea (OKOK-branded)",
             model=self.scale_mac,
+            sw_version=BUILD_TIMESTAMP,
         )
 
     def person_device_info(self, person: Person) -> DeviceInfo:
@@ -151,14 +163,27 @@ class OkokScaleCoordinator:
         if completed is not None:
             self.hass.async_create_task(self._async_finish_session(completed))
 
+        current = self._assembler.current
+        if current is not None and current.frames:
+            latest = current.final_frame
+            self.live_reading = {
+                "weight_kg": latest.weight_kg,
+                "impedance": latest.impedance,
+                "stable": latest.stable,
+            }
+
         # (Re)schedule the timer that closes a session out even if the
         # scale simply goes quiet and no further advertisement ever
         # arrives to trigger the inline gap-detection path in `ingest()`.
+        # Once the in-progress session has locked, a much shorter gap is
+        # enough to consider it finished (see STABLE_SESSION_GAP_SECONDS) -
+        # this is what makes the "Add person" dialog, last-measurement
+        # sensor, and CSV logging react within a few seconds instead of up
+        # to a minute after someone steps off.
+        gap = STABLE_SESSION_GAP_SECONDS if (current is not None and current.has_stable_frame) else SESSION_GAP_SECONDS
         if self._timeout_cancel is not None:
             self._timeout_cancel()
-        self._timeout_cancel = async_call_later(
-            self.hass, SESSION_GAP_SECONDS + 1, self._async_check_timeout
-        )
+        self._timeout_cancel = async_call_later(self.hass, gap + 1, self._async_check_timeout)
 
     @callback
     def _async_check_timeout(self, _now: Any) -> None:
@@ -182,17 +207,32 @@ class OkokScaleCoordinator:
 
         now = time.time()
         pending = self.store.pending_registration
-        pending_person_id: str | None = None
         if pending is not None:
             if is_registration_armed(pending["armed_at"], now, REGISTRATION_ARMING_SECONDS):
-                pending_person_id = pending["person_id"]
+                await self.store.async_clear_pending_registration()
+                pending_person_id = pending.get("person_id")
+                if pending_person_id is None:
+                    # Anonymous capture for the "Add person" dialog: don't
+                    # assign/log anything until async_complete_pending_capture
+                    # is told what profile to attach it to. If a *previous*
+                    # anonymous capture is still sitting here unclaimed (the
+                    # dialog was closed without finishing), recover it via
+                    # normal matching now rather than silently discarding it
+                    # when it gets overwritten below.
+                    if self.pending_capture_session is not None:
+                        await self._async_recover_abandoned_capture()
+                    self.pending_capture_session = session
+                    return
+                await self._async_record_measurement(session, pending_person_id)
+                return
+            # Armed but expired by the time this session finished - drop
+            # it and fall through to normal matching below.
             await self.store.async_clear_pending_registration()
 
         person_id = match_person(
             final.weight_kg,
             final.impedance,
             list(self.store.people.values()),
-            pending_person_id=pending_person_id,
         )
 
         if person_id is None:
@@ -205,22 +245,48 @@ class OkokScaleCoordinator:
 
         await self._async_record_measurement(session, person_id)
 
+    async def _async_recover_abandoned_capture(self) -> None:
+        """Salvage a session captured for an "Add person" dialog that was
+        never finished (closed without waiting), via normal matching,
+        instead of letting it be silently dropped."""
+        stray = self.pending_capture_session
+        self.pending_capture_session = None
+        if stray is None:
+            return
+        final = stray.final_frame
+        person_id = match_person(final.weight_kg, final.impedance, list(self.store.people.values()))
+        if person_id is not None:
+            await self._async_record_measurement(stray, person_id)
+
     async def _async_record_measurement(self, session: Session, person_id: str) -> None:
         person = self.store.people[person_id]
         final = session.final_frame
         timestamp = dt_util.now().isoformat(timespec="seconds")
 
+        final_body_fat_pct = calc_body_fat_pct(
+            final.weight_kg, person.height_cm, person.age_years, person.sex, final.impedance, self.body_fat_formula
+        )
+
+        # Update the rolling baseline history and auto-establish the
+        # baseline itself the first time it fills up (see
+        # const.BASELINE_MEASUREMENT_COUNT) - only touched once per
+        # session, using the final value, not once per logged frame below.
+        if final_body_fat_pct is not None:
+            person.recent_body_fat_history = (person.recent_body_fat_history + [final_body_fat_pct])[
+                -BASELINE_MEASUREMENT_COUNT:
+            ]
+            if person.baseline_body_fat_pct is None and len(person.recent_body_fat_history) == BASELINE_MEASUREMENT_COUNT:
+                person.baseline_body_fat_pct = calc_baseline_body_fat_pct(person.recent_body_fat_history)
+
+        final_relative_pct = calc_relative_body_fat_pct(final_body_fat_pct, person.baseline_body_fat_pct)
+
         # Log every frame of the session (the settling curve), not just the
         # final value, so the CSV is directly graphable.
         for frame in session.frames:
-            composition = compute_body_composition(
-                frame.weight_kg,
-                person.height_cm,
-                person.age_years,
-                person.sex,
-                frame.impedance,
-                self.body_fat_formula,
+            frame_body_fat_pct = calc_body_fat_pct(
+                frame.weight_kg, person.height_cm, person.age_years, person.sex, frame.impedance, self.body_fat_formula
             )
+            frame_relative_pct = calc_relative_body_fat_pct(frame_body_fat_pct, person.baseline_body_fat_pct)
             await self.csv_logger.async_append_row(
                 person_id,
                 {
@@ -228,18 +294,10 @@ class OkokScaleCoordinator:
                     "session_id": session.id,
                     "weight_kg": frame.weight_kg,
                     "impedance": frame.impedance,
-                    **composition,
+                    "body_fat_pct": frame_body_fat_pct,
+                    "body_fat_relative_pct": frame_relative_pct,
                 },
             )
-
-        final_composition = compute_body_composition(
-            final.weight_kg,
-            person.height_cm,
-            person.age_years,
-            person.sex,
-            final.impedance,
-            self.body_fat_formula,
-        )
 
         person.ref_weight_kg = final.weight_kg
         person.ref_impedance = final.impedance
@@ -253,7 +311,8 @@ class OkokScaleCoordinator:
             "impedance": final.impedance,
             "timestamp": timestamp,
             "assigned_at": time.time(),
-            **final_composition,
+            "body_fat_pct": final_body_fat_pct,
+            "body_fat_relative_pct": final_relative_pct,
         }
         self.person_data[person_id] = measurement
         self.last_measurement = measurement
@@ -278,15 +337,14 @@ class OkokScaleCoordinator:
         """Sync a person's ref_weight_kg/ref_impedance + displayed sensors
         from their CSV's last row.
 
-        Used on startup, and after a reassignment moves rows in or out of
-        a person's file - both their matching reference (ref_weight_kg /
-        ref_impedance, which the interval-matching algorithm depends on
-        being current) and their displayed sensors must fall back to
-        whatever row is now actually last, or go blank if none remain.
-        Always overwrites, rather than only seeding when unset: after a
-        reassignment moves rows *out* of a person's file, their ref must
-        follow the row that's now actually last, not stay pinned to the
-        just-reassigned-away value.
+        Used on startup, after a reassignment moves rows in or out of a
+        person's file, and after resetting their baseline. Always
+        overwrites ref_weight_kg/ref_impedance rather than only seeding
+        when unset (a reassignment moving rows *out* must follow the row
+        that's now actually last, not stay pinned to the just-reassigned-
+        away value). body_fat_relative_pct is always recomputed fresh from
+        the row's absolute body_fat_pct against the person's *current*
+        baseline, never trusted from the CSV's own (point-in-time) value.
         """
         row = await self.csv_logger.async_read_last_row(person_id)
         person = self.store.people.get(person_id)
@@ -309,6 +367,9 @@ class OkokScaleCoordinator:
         def _optional_float(value: str | None) -> float | None:
             return float(value) if value not in (None, "") else None
 
+        body_fat_pct = _optional_float(row.get("body_fat_pct"))
+        baseline = person.baseline_body_fat_pct if person is not None else None
+
         self.person_data[person_id] = {
             "session_id": row.get("session_id"),
             "person_id": person_id,
@@ -316,10 +377,8 @@ class OkokScaleCoordinator:
             "weight_kg": weight_kg,
             "impedance": impedance,
             "timestamp": row.get("time"),
-            "bmi": _optional_float(row.get("bmi")),
-            "body_fat_pct": _optional_float(row.get("body_fat_pct")),
-            "lean_mass_kg": _optional_float(row.get("lean_mass_kg")),
-            "body_water_pct": _optional_float(row.get("body_water_pct")),
+            "body_fat_pct": body_fat_pct,
+            "body_fat_relative_pct": calc_relative_body_fat_pct(body_fat_pct, baseline),
         }
 
     # ---- registration -----------------------------------------------------
@@ -347,6 +406,34 @@ class OkokScaleCoordinator:
         await self._async_refresh_person_from_csv(person_id)  # seeds ref_weight_kg if a CSV already exists
         return person
 
+    async def async_complete_pending_capture(
+        self,
+        *,
+        name: str,
+        sex: str,
+        age_years: int,
+        height_cm: float,
+        activity_level: str = "normal",
+    ) -> Person:
+        """Create a person from a just-captured anonymous session.
+
+        Used by the "Add person" dialog, which arms an anonymous capture
+        (no Person exists yet - see async_arm_registration/person_id=None)
+        instead of creating the person up front, so nothing is saved until
+        a real weighing has actually been captured. Raises ValueError if
+        there's no captured session waiting (caller should check
+        pending_capture_session first).
+        """
+        session = self.pending_capture_session
+        if session is None:
+            raise ValueError("no pending capture session to complete")
+        self.pending_capture_session = None
+        person = await self.async_add_person(
+            name=name, sex=sex, age_years=age_years, height_cm=height_cm, activity_level=activity_level
+        )
+        await self._async_record_measurement(session, person.id)
+        return person
+
     async def async_update_person(self, person: Person) -> None:
         await self.store.async_update_person(person)
 
@@ -368,8 +455,42 @@ class OkokScaleCoordinator:
         await self.store.async_remove_person(person_id)
         self.person_data.pop(person_id, None)
 
-    async def async_arm_registration(self, person_id: str) -> None:
+    async def async_arm_registration(self, person_id: str | None) -> None:
+        """Arm the next completed weighing for unconditional capture.
+
+        `person_id=None` arms an *anonymous* capture for the "Add person"
+        dialog, which doesn't create the person until the weighing is
+        actually captured - see async_complete_pending_capture.
+        """
         await self.store.async_arm_registration(person_id, time.time())
+
+    async def async_cancel_pending_registration(self) -> None:
+        """Clear an armed-but-abandoned registration immediately.
+
+        Not strictly required for correctness (a stale entry is harmless -
+        `_async_finish_session` treats it as expired and clears it lazily
+        on the next weighing, and arming again just overwrites it), but
+        avoids a stale window lingering after e.g. the "Add person" dialog
+        times out.
+        """
+        await self.store.async_clear_pending_registration()
+
+    async def async_reset_baseline(self, person_id: str) -> bool:
+        """Recompute a person's baseline from their current rolling
+        history (their most recent BASELINE_MEASUREMENT_COUNT absolute
+        body-fat% readings - fewer if they don't have that many yet).
+
+        Returns False (a no-op) if the person has no history at all yet.
+        """
+        person = self.store.people.get(person_id)
+        if person is None or not person.recent_body_fat_history:
+            return False
+
+        person.baseline_body_fat_pct = calc_baseline_body_fat_pct(person.recent_body_fat_history)
+        await self.store.async_update_person(person)
+        await self._async_refresh_person_from_csv(person_id)
+        async_dispatcher_send(self.hass, f"{SIGNAL_PERSON_UPDATED}_{self.entry_id}_{person_id}")
+        return True
 
     # ---- manual reassignment ------------------------------------------
 
@@ -402,6 +523,7 @@ class OkokScaleCoordinator:
             target_age_years=target_person.age_years,
             target_sex=target_person.sex,
             target_formula=self.body_fat_formula,
+            target_baseline_body_fat_pct=target_person.baseline_body_fat_pct,
         )
         if not moved_rows:
             return False
@@ -409,19 +531,9 @@ class OkokScaleCoordinator:
         await self._async_refresh_person_from_csv(from_person_id)
         await self._async_refresh_person_from_csv(target_person_id)
 
-        new_final = moved_rows[-1]
         new_measurement = {
-            "session_id": assignment["session_id"],
-            "person_id": target_person_id,
-            "person_name": target_person.name,
-            "weight_kg": new_final["weight_kg"],
-            "impedance": new_final["impedance"],
-            "timestamp": assignment["timestamp"],
+            **self.person_data.get(target_person_id, {}),
             "assigned_at": time.time(),
-            "bmi": new_final["bmi"],
-            "body_fat_pct": new_final["body_fat_pct"],
-            "lean_mass_kg": new_final["lean_mass_kg"],
-            "body_water_pct": new_final["body_water_pct"],
         }
         self.last_measurement = new_measurement
         await self.store.async_set_last_assignment(new_measurement)

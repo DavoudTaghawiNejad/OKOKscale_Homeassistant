@@ -105,6 +105,32 @@ def _build_session(mfr_id: int, payload_hex: str, now: float):
     return assembler.check_timeout(now + 61)
 
 
+def _make_service_info(manufacturer_data: dict[int, bytes]):
+    """A minimal, real BluetoothServiceInfoBleak for driving
+    coordinator._async_handle_advertisement directly (rather than through
+    HA's own scanner, which we don't have real hardware for in tests).
+    """
+    from bleak.backends.device import BLEDevice
+    from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
+
+    device = BLEDevice(TEST_MAC, "OKOK", None)
+    return BluetoothServiceInfoBleak(
+        name="OKOK",
+        address=TEST_MAC,
+        rssi=-60,
+        manufacturer_data=manufacturer_data,
+        service_data={},
+        service_uuids=[],
+        source="local",
+        device=device,
+        advertisement=None,
+        connectable=False,
+        time=0.0,
+        tx_power=None,
+        raw=None,
+    )
+
+
 @pytest.fixture
 async def configured_entry(okok_hass):
     """A fully set-up config entry, returning (hass, entry)."""
@@ -151,11 +177,16 @@ async def test_config_flow_user_step_creates_entry(okok_hass) -> None:
     assert result2["data"][CONF_SCALE_MAC] == TEST_MAC
 
 
-async def test_add_person_via_options_flow_creates_entities(configured_entry) -> None:
-    """Drives the exact options-flow path that previously 500'd.
+async def test_add_person_creates_nothing_until_a_weighing_is_captured(configured_entry) -> None:
+    """Drives the exact options-flow path that previously 500'd, and then
+    got stuck (the originally-reported bug: submitting after actually
+    stepping on the scale didn't close the dialog).
 
-    Menu -> add_person form -> add_person_done confirmation, the same
-    sequence a real user goes through in Configure -> Add a person.
+    Menu -> add_person form -> add_person_done, the same sequence a real
+    user goes through in Configure -> Add a person. Under the current
+    design, nothing is saved when the form is submitted - only once a
+    weighing is actually captured does the person (and their entities)
+    get created; see coordinator.async_complete_pending_capture.
     """
     hass, entry = configured_entry
 
@@ -176,18 +207,34 @@ async def test_add_person_via_options_flow_creates_entities(configured_entry) ->
     assert result3["step_id"] == "add_person_done"
     await hass.async_block_till_done()
 
-    # Entities are already created at this point (the reload that follows
-    # adding the person happens before add_person_done is even shown) -
-    # the dialog staying open waiting for a weighing is a separate concern,
-    # covered by test_add_person_done_waits_for_weighing_before_closing.
+    # Nothing is created yet - just an anonymous capture window armed.
+    coordinator = _coordinator(hass, entry)
+    assert "me" not in coordinator.people
+    assert "sensor.okok_scale_me_weight" not in hass.states.async_entity_ids()
+    assert coordinator.store.pending_registration is not None
+    assert coordinator.store.pending_registration["person_id"] is None
+
+    # Now they actually step on the scale and lock a reading.
+    await coordinator._async_finish_session(_build_session(*F_6190_LOCKED, now=1000.0))
+    await hass.async_block_till_done()
+    assert coordinator.pending_capture_session is not None
+
+    result4 = await hass.config_entries.options.async_configure(result3["flow_id"], {})
+    assert result4["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    # *Now* the person and their entities exist, seeded with the captured weighing.
     all_ids = hass.states.async_entity_ids()
     assert "sensor.okok_scale_me_weight" in all_ids
-    assert "sensor.okok_scale_me_body_fat" in all_ids
+    assert "sensor.okok_scale_me_body_fat_relative" in all_ids
     assert "button.okok_scale_me_download_csv" in all_ids
+    assert "button.okok_scale_me_arm_capture" in all_ids
+    assert "button.okok_scale_me_reset_baseline" in all_ids
+    assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(61.9)
 
     coordinator = _coordinator(hass, entry)
-    assert coordinator.store.pending_registration is not None
-    assert coordinator.store.pending_registration["person_id"] == "me"
+    assert "me" in coordinator.people
+    assert coordinator.people["me"].ref_weight_kg == pytest.approx(61.9)
 
 
 async def test_full_weighing_pipeline_assigns_and_updates_sensors(configured_entry) -> None:
@@ -352,10 +399,12 @@ async def test_add_person_done_times_out_with_error(configured_entry) -> None:
     assert result2["type"] == FlowResultType.ABORT
     assert result2["reason"] == "registration_timed_out"
 
-    # The person is still saved (per spec), just without a captured reference weight.
+    # Nothing was ever created - the person only gets saved once a
+    # weighing is actually captured, and none was.
     coordinator = _coordinator(hass, entry)
-    assert "me" in coordinator.people
-    assert coordinator.people["me"].ref_weight_kg is None
+    assert "me" not in coordinator.people
+    assert "sensor.okok_scale_me_weight" not in hass.states.async_entity_ids()
+    assert coordinator.store.pending_registration is None
 
 
 async def test_arm_capture_button_fixes_a_person_who_missed_registration(configured_entry) -> None:
@@ -409,3 +458,89 @@ async def test_arm_capture_button_fixes_a_person_who_missed_registration(configu
     await coordinator._async_finish_session(_build_session(*F_5800_LOCKED, now=4000.0))
     await hass.async_block_till_done()
     assert float(hass.states.get("sensor.okok_scale_wife_weight").state) == pytest.approx(58.0)
+
+
+async def test_add_person_dialog_shows_a_live_reading_before_it_locks(configured_entry) -> None:
+    """Home Assistant dialogs can't get server-pushed updates, so this
+    isn't truly live - but it must reflect the scale's current (still
+    settling, not yet locked) reading as of the last time the dialog was
+    checked, which is what "show the weight and impedance as it's
+    submitted" means in a data_entry_flow form.
+    """
+    from homeassistant.components import bluetooth
+
+    hass, entry = configured_entry
+    coordinator = _coordinator(hass, entry)
+
+    result = await _start_add_person_flow(hass, entry)
+    assert "No reading yet" in result["description_placeholders"]["live_reading"]
+
+    # An in-progress, unlocked frame arrives (62.10 kg, not yet the final
+    # captured value) - not a completed session, just a live peek.
+    info = _make_service_info({0x07C0: bytes.fromhex("184200000a0124f02c59f1f028")})
+    coordinator._async_handle_advertisement(info, bluetooth.BluetoothChange.ADVERTISEMENT)
+
+    result2 = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    live_text = result2["description_placeholders"]["live_reading"]
+    assert "62.10" in live_text
+    assert "settling" in live_text
+
+    # Still nothing created - only a completed, locked session does that.
+    assert "me" not in coordinator.people
+
+
+async def test_abandoned_capture_is_recovered_via_normal_matching(configured_entry) -> None:
+    """If the "Add person" dialog is closed after arming but before a
+    weighing is captured, and someone else steps on the scale in the
+    meantime, that weighing must not be silently swallowed - it gets
+    recovered via normal matching the next time a capture would otherwise
+    overwrite it. See coordinator._async_recover_abandoned_capture.
+    """
+    hass, entry = configured_entry
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_add_person(name="Me", sex="male", age_years=40, height_cm=178)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_arm_registration("me")
+    await coordinator._async_finish_session(_build_session(*F_6190_LOCKED, now=1000.0))
+    await hass.async_block_till_done()
+
+    # First "Add person" dialog: armed, then abandoned (never completes).
+    await coordinator.async_arm_registration(None)
+    await coordinator._async_finish_session(_build_session(*F_7000_LOCKED, now=2000.0))
+    assert coordinator.pending_capture_session is not None
+    stray_session_id = coordinator.pending_capture_session.id
+
+    # A second "Add person" dialog is opened and captures something else
+    # before the first one was ever claimed.
+    await coordinator.async_arm_registration(None)
+    await coordinator._async_finish_session(_build_session(*F_5800_LOCKED, now=3000.0))
+    await hass.async_block_till_done()
+
+    # The stray 70.0 kg session was not lost - it reached "Me" (the only
+    # seeded person) via normal matching instead of vanishing.
+    assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(70.0)
+    assert hass.states.get("sensor.okok_scale_me_weight").attributes.get("csv_download_url") is not None
+
+    # The second capture is still waiting to be claimed.
+    assert coordinator.pending_capture_session is not None
+    assert coordinator.pending_capture_session.id != stray_session_id
+    assert coordinator.pending_capture_session.final_frame.weight_kg == pytest.approx(58.0)
+
+
+async def test_hub_device_shows_build_timestamp_as_sw_version(configured_entry) -> None:
+    """Settings -> Devices & Services -> the scale device -> a version
+    field you can check after a HACS redownload + restart to confirm
+    which build actually landed."""
+    from homeassistant.helpers import device_registry as dr
+
+    from custom_components.okok_scale.const import BUILD_TIMESTAMP
+
+    hass, entry = configured_entry
+    device_registry = dr.async_get(hass)
+    device = device_registry.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    assert device is not None
+    assert device.sw_version == BUILD_TIMESTAMP

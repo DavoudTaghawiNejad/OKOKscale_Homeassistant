@@ -1,11 +1,19 @@
 /**
- * okok-scale-card - per-person weight/body-composition history card for the
- * OKOK Body Composition Scale integration.
+ * okok-scale-card - per-person weight + relative-body-fat history card for
+ * the OKOK Body Composition Scale integration.
  *
  * No external dependencies (no charting library, no CDN fetches) so it
  * stays light on a Raspberry Pi 3: history is pulled through Home
- * Assistant's own history websocket API and rendered as a small inline SVG
- * line chart.
+ * Assistant's own history websocket API and rendered as two small inline
+ * SVG line charts (weight, and body fat relative to the person's
+ * baseline - 100% = baseline) stacked in one card, since the beginning of
+ * their measurements.
+ *
+ * This card only handles history; for a compact "current value + reset
+ * baseline button" card, use a stock entities/tile card with
+ * sensor.okok_scale_<id>_weight, sensor.okok_scale_<id>_body_fat_relative,
+ * and button.okok_scale_<id>_reset_baseline - see the README for a ready
+ * YAML snippet.
  *
  * Usage (Lovelace YAML):
  *   type: custom:okok-scale-card
@@ -20,27 +28,16 @@ const RANGES = {
   "30d": { label: "30d", days: 30 },
   "90d": { label: "90d", days: 90 },
   "1y": { label: "1y", days: 365 },
-  all: { label: "All", days: 3650 },
+  all: { label: "All", days: 36500 },
 };
 
-const METRIC_SUFFIXES = {
-  weight: "weight",
-  body_fat: "body_fat",
-  lean_mass: "lean_mass",
-  body_water: "body_water",
-  bmi: "bmi",
-  impedance: "impedance",
-};
+const CHARTS = [
+  { metric: "weight", suffix: "weight", title: "Weight (kg)", digits: 1 },
+  { metric: "body_fat_relative", suffix: "body_fat_relative", title: "Body fat, relative to baseline (%)", digits: 1 },
+];
 
-function entityIdFor(personId, metric) {
-  return `sensor.okok_scale_${personId}_${METRIC_SUFFIXES[metric]}`;
-}
-
-function fmt(value, digits = 1) {
-  if (value === null || value === undefined || value === "" || Number.isNaN(Number(value))) {
-    return "–";
-  }
-  return Number(value).toFixed(digits);
+function entityIdFor(personId, suffix) {
+  return `sensor.okok_scale_${personId}_${suffix}`;
 }
 
 class OkokScaleCard extends HTMLElement {
@@ -54,11 +51,10 @@ class OkokScaleCard extends HTMLElement {
     this._selectedPersonId = null;
     this._people = null;
     this._historyCache = new Map();
-    this._loading = false;
   }
 
   getCardSize() {
-    return 6;
+    return 8;
   }
 
   set hass(hass) {
@@ -69,11 +65,9 @@ class OkokScaleCard extends HTMLElement {
       this._root = this.attachShadow({ mode: "open" });
       this._root.innerHTML = this._skeletonHtml();
       this._els = {
-        card: this._root.querySelector("ha-card"),
         tabs: this._root.querySelector(".okok-tabs"),
         ranges: this._root.querySelector(".okok-ranges"),
-        chart: this._root.querySelector(".okok-chart"),
-        tiles: this._root.querySelector(".okok-tiles"),
+        charts: CHARTS.map((c) => this._root.querySelector(`.okok-chart[data-metric="${c.metric}"]`)),
         empty: this._root.querySelector(".okok-empty"),
         download: this._root.querySelector(".okok-download"),
       };
@@ -92,13 +86,21 @@ class OkokScaleCard extends HTMLElement {
 
     this._renderTabs();
     this._renderRanges();
-    this._renderTiles();
-    this._refreshChart();
+    this._renderDownloadLink();
+    this._refreshCharts();
   }
 
   // ---- static shell ----------------------------------------------------
 
   _skeletonHtml() {
+    const chartMarkup = CHARTS.map(
+      (c) => `
+        <div class="okok-chart-block">
+          <div class="okok-chart-title">${c.title}</div>
+          <svg class="okok-chart" data-metric="${c.metric}" viewBox="0 0 600 180" preserveAspectRatio="none"></svg>
+        </div>`
+    ).join("");
+
     return `
       <style></style>
       <ha-card>
@@ -111,8 +113,7 @@ class OkokScaleCard extends HTMLElement {
           Settings &rarr; Devices &amp; Services &rarr; OKOK Body Composition Scale &rarr; Configure,
           or set the <code>people</code> option on this card.
         </div>
-        <svg class="okok-chart" viewBox="0 0 600 200" preserveAspectRatio="none"></svg>
-        <div class="okok-tiles"></div>
+        ${chartMarkup}
         <a class="okok-download" href="#" target="_blank" rel="noopener">Download full CSV</a>
       </ha-card>
     `;
@@ -136,18 +137,17 @@ class OkokScaleCard extends HTMLElement {
         background: transparent; color: var(--secondary-text-color, #727272); font-size: 0.85em;
       }
       .okok-range-btn.active { background: var(--secondary-background-color, #eee); color: var(--primary-text-color, #212121); font-weight: 500; }
-      .okok-chart { width: 100%; height: 160px; display: block; }
+      .okok-chart-block { margin-top: 10px; }
+      .okok-chart-title { font-size: 0.8em; color: var(--secondary-text-color, #727272); margin-bottom: 2px; }
+      .okok-chart { width: 100%; height: 140px; display: block; }
       .okok-chart .line { fill: none; stroke: var(--primary-color, #03a9f4); stroke-width: 2; }
+      .okok-chart .baseline-line { stroke: var(--divider-color, #e0e0e0); stroke-width: 1; stroke-dasharray: 4 3; }
       .okok-chart .dot { fill: var(--primary-color, #03a9f4); }
       .okok-chart .axis-label { fill: var(--secondary-text-color, #727272); font-size: 9px; }
       .okok-chart .grid { stroke: var(--divider-color, #e0e0e0); stroke-width: 1; }
       .okok-chart .empty-msg { fill: var(--secondary-text-color, #727272); font-size: 12px; }
-      .okok-tiles { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-      .okok-tile { flex: 1 1 80px; text-align: center; background: var(--secondary-background-color, #eee); border-radius: 8px; padding: 6px 4px; }
-      .okok-tile .value { font-size: 1.1em; font-weight: 500; color: var(--primary-text-color, #212121); }
-      .okok-tile .label { font-size: 0.75em; color: var(--secondary-text-color, #727272); }
       .okok-empty { color: var(--secondary-text-color, #727272); font-size: 0.9em; padding: 8px 0; }
-      .okok-download { display: block; margin-top: 10px; font-size: 0.85em; color: var(--primary-color, #03a9f4); text-decoration: none; }
+      .okok-download { display: block; margin-top: 12px; font-size: 0.85em; color: var(--primary-color, #03a9f4); text-decoration: none; }
       .okok-download:hover { text-decoration: underline; }
     `;
   }
@@ -183,8 +183,8 @@ class OkokScaleCard extends HTMLElement {
       btn.addEventListener("click", () => {
         this._selectedPersonId = person.id;
         this._renderTabs();
-        this._renderTiles();
-        this._refreshChart();
+        this._renderDownloadLink();
+        this._refreshCharts();
       });
       this._els.tabs.appendChild(btn);
     }
@@ -199,34 +199,15 @@ class OkokScaleCard extends HTMLElement {
       btn.addEventListener("click", () => {
         this._selectedRange = key;
         this._renderRanges();
-        this._refreshChart();
+        this._refreshCharts();
       });
       this._els.ranges.appendChild(btn);
     }
   }
 
-  // ---- current-value tiles -----------------------------------------
-
-  _renderTiles() {
+  _renderDownloadLink() {
     const personId = this._selectedPersonId;
     if (!personId) return;
-
-    const tileDefs = [
-      { metric: "body_fat", label: "Body fat %", digits: 1 },
-      { metric: "lean_mass", label: "Lean mass kg", digits: 1 },
-      { metric: "body_water", label: "Body water %", digits: 1 },
-      { metric: "bmi", label: "BMI", digits: 1 },
-    ];
-
-    this._els.tiles.innerHTML = "";
-    for (const def of tileDefs) {
-      const state = this._hass.states[entityIdFor(personId, def.metric)];
-      const tile = document.createElement("div");
-      tile.className = "okok-tile";
-      tile.innerHTML = `<div class="value">${fmt(state ? state.state : null, def.digits)}</div><div class="label">${def.label}</div>`;
-      this._els.tiles.appendChild(tile);
-    }
-
     const weightState = this._hass.states[entityIdFor(personId, "weight")];
     const url = weightState && weightState.attributes.csv_download_url;
     if (url) {
@@ -243,26 +224,29 @@ class OkokScaleCard extends HTMLElement {
     return person ? person.name : personId;
   }
 
-  // ---- chart --------------------------------------------------------
+  // ---- charts -----------------------------------------------------------
 
-  async _refreshChart() {
+  async _refreshCharts() {
     const personId = this._selectedPersonId;
     if (!personId) return;
 
-    const cacheKey = `${personId}:${this._selectedRange}`;
-    let points = this._historyCache.get(cacheKey);
-    if (!points) {
-      points = await this._fetchHistory(personId);
-      this._historyCache.set(cacheKey, points);
-    }
-    // Only draw if the selection hasn't changed while we were awaiting.
-    if (personId === this._selectedPersonId) {
-      this._drawChart(points);
-    }
+    await Promise.all(
+      CHARTS.map(async (chartDef, index) => {
+        const cacheKey = `${personId}:${chartDef.metric}:${this._selectedRange}`;
+        let points = this._historyCache.get(cacheKey);
+        if (!points) {
+          points = await this._fetchHistory(personId, chartDef.suffix);
+          this._historyCache.set(cacheKey, points);
+        }
+        if (personId === this._selectedPersonId) {
+          this._drawChart(this._els.charts[index], points, { showBaselineLine: chartDef.metric === "body_fat_relative" });
+        }
+      })
+    );
   }
 
-  async _fetchHistory(personId) {
-    const entityId = entityIdFor(personId, "weight");
+  async _fetchHistory(personId, suffix) {
+    const entityId = entityIdFor(personId, suffix);
     const days = RANGES[this._selectedRange].days;
     const start = new Date(Date.now() - days * 86400000);
 
@@ -289,10 +273,9 @@ class OkokScaleCard extends HTMLElement {
     }
   }
 
-  _drawChart(points) {
-    const svg = this._els.chart;
+  _drawChart(svg, points, { showBaselineLine } = {}) {
     const W = 600;
-    const H = 200;
+    const H = 180;
     const padL = 36;
     const padR = 10;
     const padT = 10;
@@ -306,13 +289,19 @@ class OkokScaleCard extends HTMLElement {
       text.setAttribute("y", H / 2);
       text.setAttribute("text-anchor", "middle");
       text.setAttribute("class", "empty-msg");
-      text.textContent = "No weighings in this range yet";
+      text.textContent = "No data in this range yet";
       svg.appendChild(text);
       return;
     }
 
-    const minV = Math.min(...points.map((p) => p.v));
-    const maxV = Math.max(...points.map((p) => p.v));
+    let minV = Math.min(...points.map((p) => p.v));
+    let maxV = Math.max(...points.map((p) => p.v));
+    if (showBaselineLine) {
+      // Always keep 100% (the baseline) in view, even if every point is
+      // above or below it, so the reference line is never off-chart.
+      minV = Math.min(minV, 100);
+      maxV = Math.max(maxV, 100);
+    }
     const vSpan = maxV - minV || 1;
     const minT = points[0].t;
     const maxT = points[points.length - 1].t;
@@ -323,7 +312,7 @@ class OkokScaleCard extends HTMLElement {
 
     const ns = "http://www.w3.org/2000/svg";
 
-    // Horizontal gridlines + y labels (min / mid / max weight).
+    // Horizontal gridlines + y labels (min / mid / max).
     for (const frac of [0, 0.5, 1]) {
       const value = minV + frac * vSpan;
       const yy = y(value);
@@ -341,6 +330,17 @@ class OkokScaleCard extends HTMLElement {
       label.setAttribute("class", "axis-label");
       label.textContent = `${value.toFixed(1)}`;
       svg.appendChild(label);
+    }
+
+    if (showBaselineLine) {
+      const yy = y(100);
+      const line = document.createElementNS(ns, "line");
+      line.setAttribute("x1", padL);
+      line.setAttribute("x2", W - padR);
+      line.setAttribute("y1", yy);
+      line.setAttribute("y2", yy);
+      line.setAttribute("class", "baseline-line");
+      svg.appendChild(line);
     }
 
     // Date labels (first / last).
@@ -384,5 +384,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "okok-scale-card",
   name: "OKOK Scale Card",
-  description: "Per-person weight & body-composition history for the OKOK Body Composition Scale integration.",
+  description: "Per-person weight + relative-body-fat history for the OKOK Body Composition Scale integration.",
 });

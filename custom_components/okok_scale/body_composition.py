@@ -11,17 +11,17 @@ like this one that don't document a calibrated impedance regression. A
 genuine bio-impedance (BIA) body-fat model needs the raw resistance in ohms
 plus a validated, device-specific regression (e.g. Kyle 2001, Sun 2003) and
 per-scale calibration constants that this hardware does not publish.
-Because of that:
-  * the primary body_fat_pct / lean_mass_kg / bmi outputs below are BMI
-    based, not impedance based;
-  * the raw impedance is still recorded (by the CSV logger / sensor) so a
-    better BIA model can be dropped in later without any data loss.
 
-Total body water uses the Hume (1966) formula, which *is* an independently
-well-established weight/height regression (not impedance based either).
+Because none of that calibration exists, the integration doesn't expose
+this absolute body-fat estimate directly - only *relative to a personal
+baseline* (see calc_relative_body_fat_pct / calc_baseline_body_fat_pct),
+where a lot of the calibration error cancels out since it's the same bias
+applied consistently to every reading for that person.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from .const import (
     BODY_FAT_MAX_PCT,
@@ -45,12 +45,6 @@ def _raw_bmi(weight_kg: float, height_cm: float) -> float | None:
         return None
     height_m = height_cm / 100
     return weight_kg / (height_m**2)
-
-
-def calc_bmi(weight_kg: float, height_cm: float) -> float | None:
-    """BMI, rounded to 1 decimal place for display."""
-    bmi = _raw_bmi(weight_kg, height_cm)
-    return None if bmi is None else round(bmi, 1)
 
 
 def _clamp_body_fat(pct: float) -> float:
@@ -98,7 +92,9 @@ def calc_body_fat_pct(
     impedance: int | None = None,  # noqa: ARG001 - intentionally unused, see module docstring
     formula: str = DEFAULT_BODY_FAT_FORMULA,
 ) -> float | None:
-    """Estimated body-fat percentage, clamped to a plausible range."""
+    """Absolute, uncalibrated body-fat percentage estimate, clamped to a
+    plausible range. Not exposed directly - see calc_relative_body_fat_pct.
+    """
     bmi = _raw_bmi(weight_kg, height_cm)
     if bmi is None:
         return None
@@ -107,48 +103,23 @@ def calc_body_fat_pct(
     return round(_clamp_body_fat(pct), 1)
 
 
-def calc_fat_mass_kg(weight_kg: float, body_fat_pct: float | None) -> float | None:
-    if body_fat_pct is None or weight_kg is None:
+def calc_baseline_body_fat_pct(recent_values: Sequence[float]) -> float | None:
+    """A person's baseline = the average of their N most recent absolute
+    body-fat% readings (N = const.BASELINE_MEASUREMENT_COUNT). None if no
+    values are available yet.
+    """
+    if not recent_values:
         return None
-    return round(weight_kg * body_fat_pct / 100, 1)
+    return round(sum(recent_values) / len(recent_values), 1)
 
 
-def calc_lean_mass_kg(weight_kg: float, body_fat_pct: float | None) -> float | None:
-    """Lean body mass = weight - fat mass (openScale convention)."""
-    fat_mass = calc_fat_mass_kg(weight_kg, body_fat_pct)
-    if fat_mass is None:
+def calc_relative_body_fat_pct(body_fat_pct: float | None, baseline_pct: float | None) -> float | None:
+    """Body-fat% expressed relative to a personal baseline (baseline = 100%).
+
+    None until a baseline exists yet (see calc_baseline_body_fat_pct) - the
+    absolute estimate isn't calibrated, so there's nothing meaningful to
+    show before there's a personal reference point to compare it against.
+    """
+    if body_fat_pct is None or not baseline_pct:
         return None
-    return round(weight_kg - fat_mass, 1)
-
-
-def calc_body_water_pct(weight_kg: float, height_cm: float, sex: Sex) -> float | None:
-    """Total body water percentage via the Hume (1966) formula."""
-    if weight_kg is None or weight_kg <= 0 or height_cm is None or height_cm <= 0:
-        return None
-    if sex == "male":
-        tbw_l = 0.194786 * height_cm + 0.296785 * weight_kg - 14.012934
-    else:
-        tbw_l = 0.344547 * height_cm + 0.183809 * weight_kg - 35.270121
-    tbw_l = max(tbw_l, 0.0)
-    return round(tbw_l / weight_kg * 100, 1)
-
-
-def compute_body_composition(
-    weight_kg: float,
-    height_cm: float,
-    age_years: float,
-    sex: Sex,
-    impedance: int | None = None,
-    formula: str = DEFAULT_BODY_FAT_FORMULA,
-) -> dict[str, float | None]:
-    """Convenience bundle of every derived metric for one weight reading."""
-    bmi = calc_bmi(weight_kg, height_cm)
-    body_fat_pct = calc_body_fat_pct(weight_kg, height_cm, age_years, sex, impedance, formula)
-    lean_mass_kg = calc_lean_mass_kg(weight_kg, body_fat_pct)
-    body_water_pct = calc_body_water_pct(weight_kg, height_cm, sex)
-    return {
-        "bmi": bmi,
-        "body_fat_pct": body_fat_pct,
-        "lean_mass_kg": lean_mass_kg,
-        "body_water_pct": body_water_pct,
-    }
+    return round(body_fat_pct / baseline_pct * 100, 1)

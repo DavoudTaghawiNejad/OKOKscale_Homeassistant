@@ -53,6 +53,19 @@ def _discovered_scale_macs(hass: HomeAssistant) -> list[str]:
     return macs
 
 
+def _format_live_reading(live_reading: dict[str, Any] | None) -> str:
+    """Best-effort "what's the scale showing right now" text for the
+    add_person_done dialog. Not truly live (data_entry_flow forms can't
+    push updates), but re-reads coordinator.live_reading - which updates on
+    every advertisement, not just completed sessions - on every submit, so
+    it's at least fresh as of the last time the user checked.
+    """
+    if live_reading is None:
+        return "No reading yet."
+    status = "locked - capturing" if live_reading["stable"] else "settling"
+    return f"Currently reading {live_reading['weight_kg']:.2f} kg, {live_reading['impedance']} Ω ({status})"
+
+
 class OkokScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle adding the integration. Single instance only."""
 
@@ -109,8 +122,9 @@ class OkokScaleOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self) -> None:
         self._editing_person_id: str | None = None
-        self._pending_person_id: str | None = None
-        self._pending_person_name: str | None = None
+        #: name/sex/age_years/height_cm collected by add_person, held here
+        #: (not yet persisted as a Person) until a weighing is captured.
+        self._pending_profile: dict[str, Any] | None = None
         self._pending_armed_at: float | None = None
 
     @property
@@ -127,17 +141,13 @@ class OkokScaleOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_add_person(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
-            person = await self._coordinator.async_add_person(
-                name=user_input["name"],
-                sex=user_input["sex"],
-                age_years=user_input["age_years"],
-                height_cm=user_input["height_cm"],
-            )
+            # Nothing is created yet - only armed. The profile is held on
+            # this flow instance and only turned into a real Person once a
+            # weighing is actually captured (see async_step_add_person_done
+            # / coordinator.async_complete_pending_capture).
+            self._pending_profile = dict(user_input)
             self._pending_armed_at = time.time()
-            await self._coordinator.async_arm_registration(person.id)
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            self._pending_person_id = person.id
-            self._pending_person_name = person.name
+            await self._coordinator.async_arm_registration(None)
             return await self.async_step_add_person_done()
 
         schema = vol.Schema(
@@ -151,34 +161,38 @@ class OkokScaleOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="add_person", data_schema=schema)
 
     async def async_step_add_person_done(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Hold the dialog open until the arming window is actually consumed.
+        """Hold the dialog open until a stable weighing is actually captured.
 
         Submitting this form doesn't close it by itself - each submission
-        (and the initial display) re-checks whether the pending person has
-        really been weighed yet (via `last_assignment`, not just
-        ref_weight_kg, since a re-registered person's ref could already be
-        seeded from an old CSV - see coordinator.async_add_person). If the
-        window has expired with nothing captured, this becomes an error
+        (and the initial display) re-checks whether the armed, anonymous
+        capture (see coordinator.pending_capture_session) has landed yet.
+        Only once it has does this create the person - not before, so
+        nothing gets saved for a name typed in but never actually weighed.
+        If the window expires with nothing captured, this becomes an error
         dialog (`async_abort`) instead of a silent success.
         """
-        # A fresh coordinator instance may exist after the reload in
-        # async_step_add_person, or after a previous loop through this step.
+        assert self._pending_profile is not None
+        name = self._pending_profile["name"]
         coordinator = self._coordinator
-        last_assignment = coordinator.store.last_assignment
-        captured = (
-            last_assignment is not None
-            and last_assignment.get("person_id") == self._pending_person_id
-            and last_assignment.get("assigned_at", 0) >= self._pending_armed_at
-        )
 
-        if captured:
+        if coordinator.pending_capture_session is not None:
+            await coordinator.async_complete_pending_capture(
+                name=name,
+                sex=self._pending_profile["sex"],
+                age_years=self._pending_profile["age_years"],
+                height_cm=self._pending_profile["height_cm"],
+            )
+            self._pending_profile = None
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
             return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
         remaining = REGISTRATION_ARMING_SECONDS - (time.time() - self._pending_armed_at)
         if remaining <= 0:
+            self._pending_profile = None
+            await coordinator.async_cancel_pending_registration()
             return self.async_abort(
                 reason="registration_timed_out",
-                description_placeholders={"name": self._pending_person_name or ""},
+                description_placeholders={"name": name},
             )
 
         errors: dict[str, str] = {"base": "not_yet_weighed"} if user_input is not None else {}
@@ -187,8 +201,9 @@ class OkokScaleOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema({}),
             errors=errors,
             description_placeholders={
-                "name": self._pending_person_name or "",
+                "name": name,
                 "seconds_left": str(max(0, int(remaining))),
+                "live_reading": _format_live_reading(coordinator.live_reading),
             },
         )
 

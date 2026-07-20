@@ -143,3 +143,25 @@ class TestSessionAssembler:
         assert assembler.current.id != first_session_id
         assert len(assembler.current.frames) == 1
         assert assembler.current.final_frame.weight_kg == pytest.approx(61.90)
+
+    def test_locked_session_finalizes_with_a_much_shorter_gap(self) -> None:
+        """The actual bug fix: waiting the full 60s after the scale has
+        already locked served no purpose except making everything
+        downstream (the "Add person" dialog, last-measurement sensor, CSV
+        logging) feel unresponsive for up to a minute.
+        """
+        assembler = SessionAssembler(MAC)
+        t = 0.0
+        assembler.ingest({F_6190_LOCKED[0]: F_6190_LOCKED[1]}, t)
+
+        # Nowhere near the old 60s gap, but well past the new short one.
+        assert assembler.check_timeout(t + 4) is not None
+
+    def test_unlocked_session_still_needs_the_full_gap(self) -> None:
+        assembler = SessionAssembler(MAC)
+        t = 0.0
+        assembler.ingest({F_6210[0]: F_6210[1]}, t)
+
+        # Nothing has locked yet, so the short gap must NOT apply.
+        assert assembler.check_timeout(t + 4) is None
+        assert assembler.check_timeout(t + 61) is not None

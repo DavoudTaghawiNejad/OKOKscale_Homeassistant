@@ -3,12 +3,9 @@ from __future__ import annotations
 import pytest
 
 from custom_components.okok_scale.body_composition import (
-    calc_bmi,
+    calc_baseline_body_fat_pct,
     calc_body_fat_pct,
-    calc_body_water_pct,
-    calc_fat_mass_kg,
-    calc_lean_mass_kg,
-    compute_body_composition,
+    calc_relative_body_fat_pct,
 )
 from custom_components.okok_scale.const import (
     BODY_FAT_MAX_PCT,
@@ -23,19 +20,6 @@ from custom_components.okok_scale.const import (
 MALE = dict(weight_kg=61.9, height_cm=178, age_years=40, sex="male")
 # female, 78 kg, 165 cm, 38 y/o
 FEMALE = dict(weight_kg=78.0, height_cm=165, age_years=38, sex="female")
-
-
-def test_bmi_male() -> None:
-    assert calc_bmi(**{k: v for k, v in MALE.items() if k in ("weight_kg", "height_cm")}) == pytest.approx(19.5)
-
-
-def test_bmi_female() -> None:
-    assert calc_bmi(**{k: v for k, v in FEMALE.items() if k in ("weight_kg", "height_cm")}) == pytest.approx(28.7)
-
-
-def test_bmi_guards_divide_by_zero() -> None:
-    assert calc_bmi(70.0, 0) is None
-    assert calc_bmi(0, 170) is None
 
 
 @pytest.mark.parametrize(
@@ -85,44 +69,38 @@ def test_body_fat_guards_divide_by_zero() -> None:
     assert calc_body_fat_pct(weight_kg=70.0, height_cm=0, age_years=40, sex="male") is None
 
 
-def test_fat_mass_and_lean_mass_male() -> None:
-    # Pinned to a specific formula (not the default) so this test doesn't
-    # silently start asserting different numbers if the default changes.
-    bf = calc_body_fat_pct(**MALE, formula=FORMULA_DEURENBERG_1991)  # 16.4
-    fat_mass = calc_fat_mass_kg(MALE["weight_kg"], bf)
-    lean_mass = calc_lean_mass_kg(MALE["weight_kg"], bf)
-    assert fat_mass == pytest.approx(10.2)
-    assert lean_mass == pytest.approx(51.7)
-    assert fat_mass + lean_mass == pytest.approx(MALE["weight_kg"], abs=0.15)
+def test_baseline_is_the_average_of_recent_values() -> None:
+    # 16.38 average, rounded to 1dp like every other displayed figure here.
+    assert calc_baseline_body_fat_pct([16.4, 16.8, 15.9, 16.1, 16.7]) == pytest.approx(16.4)
 
 
-def test_fat_mass_none_when_body_fat_unknown() -> None:
-    assert calc_fat_mass_kg(70.0, None) is None
-    assert calc_lean_mass_kg(70.0, None) is None
+def test_baseline_works_with_fewer_than_five_values() -> None:
+    # "Use whatever's available" - reset_baseline may be pressed before a
+    # person has 5 measurements yet.
+    assert calc_baseline_body_fat_pct([16.4, 16.8]) == pytest.approx(16.6)
+    assert calc_baseline_body_fat_pct([16.4]) == pytest.approx(16.4)
 
 
-def test_body_water_pct_male() -> None:
-    pct = calc_body_water_pct(MALE["weight_kg"], MALE["height_cm"], MALE["sex"])
-    assert pct == pytest.approx(63.1)
+def test_baseline_is_none_with_no_values() -> None:
+    assert calc_baseline_body_fat_pct([]) is None
 
 
-def test_body_water_pct_female() -> None:
-    pct = calc_body_water_pct(FEMALE["weight_kg"], FEMALE["height_cm"], FEMALE["sex"])
-    assert pct == pytest.approx(46.0)
+def test_relative_body_fat_pct_at_baseline_is_100() -> None:
+    assert calc_relative_body_fat_pct(16.4, 16.4) == pytest.approx(100.0)
 
 
-def test_body_water_pct_guards_divide_by_zero() -> None:
-    assert calc_body_water_pct(0, 170, "male") is None
-    assert calc_body_water_pct(70.0, 0, "male") is None
+def test_relative_body_fat_pct_above_and_below_baseline() -> None:
+    # Higher absolute body fat than baseline -> over 100%.
+    assert calc_relative_body_fat_pct(18.0, 16.4) == pytest.approx(109.8, abs=0.1)
+    # Lower absolute body fat than baseline -> under 100%.
+    assert calc_relative_body_fat_pct(15.0, 16.4) == pytest.approx(91.5, abs=0.1)
 
 
-def test_compute_body_composition_bundle_uses_default_formula() -> None:
-    # No `formula=` passed - exercises that DEFAULT_BODY_FAT_FORMULA
-    # (gallagher2000) is actually what gets applied when omitted.
-    result = compute_body_composition(**MALE, impedance=6000)
-    assert result == {
-        "bmi": 19.5,
-        "body_fat_pct": 11.9,
-        "lean_mass_kg": 54.5,
-        "body_water_pct": 63.1,
-    }
+def test_relative_body_fat_pct_none_without_baseline() -> None:
+    """Documented pre-baseline behaviour: unknown, not some placeholder value."""
+    assert calc_relative_body_fat_pct(16.4, None) is None
+    assert calc_relative_body_fat_pct(16.4, 0) is None
+
+
+def test_relative_body_fat_pct_none_without_absolute_value() -> None:
+    assert calc_relative_body_fat_pct(None, 16.4) is None

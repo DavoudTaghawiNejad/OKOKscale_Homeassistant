@@ -17,6 +17,13 @@ validated against the configured MAC and 13-byte payload length before being tru
 the full protocol writeup and [`tests/test_scale_parser.py`](tests/test_scale_parser.py) for a
 real captured session (which must decode to **61.90 kg / impedance 6000**).
 
+A weighing session is considered "finished" - and gets logged/matched/reflected in the dashboard -
+after a gap with no further frames. That gap is `SESSION_GAP_SECONDS` (60 s) while the reading
+hasn't locked yet, but drops to `STABLE_SESSION_GAP_SECONDS` (3 s) the moment a locked (stable)
+frame is seen, since waiting a full minute after the scale has already locked serves no purpose
+beyond making everything feel unresponsive. This is what lets the "Add person" dialog (below) react
+within a few seconds of someone stepping off, instead of up to a minute.
+
 ## Install
 
 1. In HACS, add this repository as a **custom repository** of type **Integration**.
@@ -31,18 +38,29 @@ real captured session (which must decode to **61.90 kg / impedance 6000**).
 ## Registering people
 
 Open the integration's **Configure** dialog and choose **Add a person**: name, sex, age, height.
-Submitting arms a **120-second capture window** (`REGISTRATION_ARMING_SECONDS` in `const.py`) -
-have that person step on the scale within that window and their very first weighing becomes their
-reference weight *and* reference impedance, bypassing the usual weight/impedance matching
-entirely. The dialog stays open and waits: clicking Submit before they've stepped on shows "no
-weighing detected yet" and re-shows the same form, and if the window expires with nobody weighed
-in, it becomes an error dialog instead of silently pretending it worked. The person is still saved
-either way (see the matching limitation below for what that means if they miss the window while
-someone else is already registered).
+Submitting doesn't save anything yet - it arms a **120-second capture window**
+(`REGISTRATION_ARMING_SECONDS` in `const.py`) and shows a "step on the scale now" dialog with a
+best-effort live reading (refreshed each time you press Submit - Home Assistant dialogs can't push
+live updates, so this is "as fresh as your last click", not truly real-time). The dialog **does
+not close on its own**: pressing Submit before a stable (locked) reading has come in just
+re-checks and re-shows the same form with "no weighing detected yet". Only once the scale actually
+locks does the dialog close - and *that's* the moment the person's profile, reference weight, and
+reference impedance are all created together. If the 120 s window runs out with nobody weighed in,
+you get a proper error dialog and **nothing is saved at all** - no half-created person sitting
+around.
 
-We chose an options-flow arming step over a per-person "arm capture" button (the brief's other
-allowed option) because it doesn't require entities to exist for a person before they're created,
-and keeps the whole registration flow in one place.
+(Internally: the capture window is armed "anonymously" - the coordinator holds the captured
+weighing in `pending_capture_session` without assigning it to anyone - and the profile you typed
+is held on the options-flow instance until the dialog itself turns both into a real person via
+`coordinator.async_complete_pending_capture`. If you close the dialog before it captures anything,
+and someone else happens to step on the scale within the remaining window, that stray weighing is
+recovered via normal matching rather than silently lost - see `_async_recover_abandoned_capture`
+in `coordinator.py`.)
+
+We chose an options-flow dialog over a per-person "arm capture" button for the *initial*
+registration (the brief's other allowed option) because it doesn't require entities to exist for a
+person before they're created, and keeps the whole registration flow in one place. Re-arming an
+*existing* person, on the other hand, does use a per-person button - see below.
 
 **Edit a person** / **Remove a person** are also in the Configure menu. Removing a person deletes
 their entities and registration but keeps their CSV file on disk.
@@ -100,62 +118,69 @@ people's reference weights, refreshes every affected sensor, and then resets its
 
 ## `sensor.okok_scale_last_measurement`
 
-Shows the name of whoever was most recently weighed, with the full measurement (weight, body fat,
-lean mass, body water, impedance, timestamp, person id) as attributes. It blanks itself
+Shows the name of whoever was most recently weighed, with the full measurement (weight, absolute
+and relative body fat, impedance, timestamp, person id) as attributes. It blanks itself
 (`unknown`) 10 minutes after the last weighing (`LAST_MEASUREMENT_TIMEOUT_SECONDS`), and the timer
 resets on every new weighing.
 
-## Body composition - and its honesty caveat
+## Body composition: weight and body fat relative to a personal baseline
 
-**The scale's impedance reading is logged but not used by any of the body-fat estimates below.**
-openScale's published body-metric formulas (which this integration also uses, since this hardware
-doesn't document a calibrated impedance regression) are BMI/age/sex based - a genuine bio-impedance
-(BIA) body-fat model needs the raw resistance in ohms plus a validated, device-specific regression
-(e.g. Kyle 2001, Sun 2003) and per-scale calibration constants this scale doesn't publish. Raw
-impedance is still recorded on every row (sensor + CSV) so a real BIA model can be dropped in later
-without losing any data.
+Only two numbers are shown per person: their **weight**, and their **body fat relative to their
+own baseline**, where the baseline = 100%. Nothing else (BMI, lean mass, body water, absolute body
+fat, raw impedance) is exposed as its own sensor or card field anymore - an earlier version of this
+integration did expose all of those, sourced from openScale's BMI/age/sex formulas, but they were
+removed in favour of just this one, more honestly-framed number.
 
-Pick the body-fat formula in Configure -> Settings (`body_fat_formula`):
+**Why relative, not absolute**: none of the available body-fat formulas actually consume the
+scale's bio-impedance reading - they're the BMI/age/sex estimation formulas published on the
+[openScale wiki's "Body metric
+estimations"](https://github.com/oliexdev/openScale/wiki/Bodymetric-estimation-formulas) page,
+which is what openScale itself uses for scales like this one that don't document a calibrated
+impedance regression. A genuine bio-impedance (BIA) body-fat model needs the raw resistance in
+ohms plus a validated, device-specific regression (e.g. Kyle 2001, Sun 2003) and per-scale
+calibration constants this scale doesn't publish - so the *absolute* number from any of these
+formulas isn't trustworthy on its own. Expressed *relative to a personal baseline*, though, a
+formula's systematic bias mostly cancels out (it's applied consistently to every reading for that
+person), leaving something much more meaningful: "am I trending up or down from where I started."
 
-| Formula | Notes |
-|---|---|
-| `deurenberg1991` | Deurenberg et al. 1991 |
-| `deurenberg1992` | Deurenberg et al. 1992, separate child (<16) formula |
-| `eddy1976` | Eddy et al. 1976 |
-| `gallagher2000` (default) | Gallagher et al. 2000 (non-Asian) |
+**How the baseline works**:
+- Every completed weighing computes an absolute, uncalibrated body-fat% (formula selectable in
+  Configure -> Settings -> `body_fat_formula`; same four options as before, now purely an internal
+  input rather than a displayed value).
+- Each person keeps a rolling window of their `BASELINE_MEASUREMENT_COUNT` (5) most recent
+  absolute body-fat% readings.
+- **The first time that window fills up** (their 5th-ever weighing), its average becomes their
+  baseline - the fixed 100% reference point. Until then, `sensor.okok_scale_<person>_body_fat_relative`
+  reads `unknown`: there's nothing meaningful to show relative to a baseline that doesn't exist yet.
+- The baseline then stays fixed - it does **not** silently drift with every new weighing - until
+  you explicitly reset it.
+- `button.okok_scale_<person>_reset_baseline` sets a new 100% reference point from whatever's
+  currently in that rolling window (their most recent 5 readings, or fewer if they don't have 5
+  yet). Use this any time you want "100%" to mean "right now" - e.g. at the start of a new fitness
+  phase.
+- A subsequent reading's relative percentage is `absolute_body_fat_pct / baseline_body_fat_pct *
+  100` - so 105% means "5% higher (relative) body fat than baseline", not "5 percentage points".
 
-All four are sourced from the [openScale wiki's "Body metric
-estimations"](https://github.com/oliexdev/openScale/wiki/Bodymetric-estimation-formulas) page.
-Body-fat percentage is clamped to 3-70% and derived mass figures guard against divide-by-zero
-(missing height, etc).
-
-- `fat_mass_kg = weight_kg * body_fat_pct / 100`
-- `lean_mass_kg = weight_kg - fat_mass_kg` (openScale convention)
-- `body_water_pct` uses the **Hume (1966)** total-body-water formula, which is an independently
-  well-established weight/height regression - also not impedance-based.
-
-We deliberately do **not** expose a "muscle mass" sensor: openScale doesn't publish a muscle-mass
-formula, and inventing a fraction-of-LBM constant without a citation would be worse than not
-showing it. Lean body mass is exposed instead.
-
-All formulas live in
+All of this lives in
 [`custom_components/okok_scale/body_composition.py`](custom_components/okok_scale/body_composition.py)
-and are unit-tested in isolation (no Home Assistant required) in
-[`tests/test_body_composition.py`](tests/test_body_composition.py).
+(the pure formulas + `calc_baseline_body_fat_pct`/`calc_relative_body_fat_pct`) and
+[`coordinator.py`](custom_components/okok_scale/coordinator.py) (the rolling-history/baseline
+bookkeeping), unit-tested in
+[`tests/test_body_composition.py`](tests/test_body_composition.py) and
+[`tests/test_session_engine.py`](tests/test_session_engine.py).
 
 ## Entities
 
 Per registered person (`<person>` = their slugified id):
 
 - `sensor.okok_scale_<person>_weight` (kg) - also carries `csv_download_url`
-- `sensor.okok_scale_<person>_body_fat` (%)
-- `sensor.okok_scale_<person>_lean_mass` (kg)
-- `sensor.okok_scale_<person>_body_water` (%)
-- `sensor.okok_scale_<person>_impedance` (raw, diagnostic)
-- `sensor.okok_scale_<person>_bmi`
+- `sensor.okok_scale_<person>_body_fat_relative` (%, 100% = baseline) - carries
+  `baseline_body_fat_pct`, `absolute_body_fat_pct`, and `measurements_until_baseline` as attributes
 - `button.okok_scale_<person>_download_csv` - posts a persistent notification with the CSV link
 - `button.okok_scale_<person>_arm_capture` - opens a fresh 120 s reference-capture window (see
   "Re-arming a person's capture window" above)
+- `button.okok_scale_<person>_reset_baseline` - sets their 100% reference point to the average of
+  their most recent 5 weighings (see "Body composition" above)
 
 Integration-wide:
 
@@ -166,7 +191,10 @@ Integration-wide:
 
 Every frame of a session is appended (not just the final value), so each person's file is a
 directly graphable settling-curve-plus-trend history:
-`time,session_id,weight_kg,impedance,bmi,body_fat_pct,lean_mass_kg,body_water_pct`.
+`time,session_id,weight_kg,impedance,body_fat_pct,body_fat_relative_pct`. `body_fat_pct` is the
+absolute (uncalibrated) estimate; `body_fat_relative_pct` is that row's value against whatever the
+person's baseline was *at the time the row was written* (unlike the live sensor, which always
+reflects the *current* baseline - resetting the baseline doesn't rewrite CSV history).
 
 Files live at `<config>/okok_scale/csv/<person_id>.csv` - deliberately **outside** `config/www`,
 since that folder may not exist, mixes integration data into the user's own dashboard assets, and
@@ -183,7 +211,25 @@ All file I/O runs through `hass.async_add_executor_job`; the row read/write/dele
 itself is plain, synchronous, path-based functions in `csv_logger.py` so it's unit-testable
 without a Home Assistant runtime.
 
-## The Lovelace card
+## Dashboard cards
+
+Two cards, matching the two things there are to look at: today's numbers, and the trend.
+
+**Current values card** - weight, relative body fat, and the reset-baseline button, per person. No
+custom code needed, just a stock entities card (repeat per person, swapping the id):
+
+```yaml
+type: entities
+title: Me
+entities:
+  - sensor.okok_scale_me_weight
+  - sensor.okok_scale_me_body_fat_relative
+  - button.okok_scale_me_reset_baseline
+```
+
+**History card** - the bundled custom card, showing weight and relative body fat as two stacked
+line charts since the beginning of that person's measurements, with a person-tab switcher and a
+30d/90d/1y/all range picker:
 
 ```yaml
 type: custom:okok-scale-card
@@ -193,16 +239,21 @@ type: custom:okok-scale-card
 default_range: 30d    # 30d | 90d | 1y | all
 ```
 
-Per selected person: a small inline-SVG weight-over-time line chart (pulled from Home Assistant's
-own history websocket API, so it works without any external service or CDN - important on a Pi 3),
-a 30d/90d/1y/all range picker, current-value tiles for body fat / lean mass / body water / BMI, and
-a link to that person's full CSV.
+It pulls history through Home Assistant's own history websocket API (no external service or CDN -
+important on a Pi 3) and renders it as inline SVG - no charting library dependency. The relative
+body-fat chart also draws a dashed line at 100% (the baseline) for reference.
 
-Sample dashboard section combining the card with the reassign control:
+Sample dashboard combining both, plus the reassign control:
 
 ```yaml
 title: Body Scale
 cards:
+  - type: entities
+    title: Me
+    entities:
+      - sensor.okok_scale_me_weight
+      - sensor.okok_scale_me_body_fat_relative
+      - button.okok_scale_me_reset_baseline
   - type: custom:okok-scale-card
     default_range: 90d
   - type: entities
@@ -212,6 +263,14 @@ cards:
       - sensor.okok_scale_last_measurement
 ```
 
+## Diagnostics: confirming which build is running
+
+The hub device's info panel (Settings -> Devices & Services -> OKOK Body Composition Scale -> the
+device, not a person) shows a **software version** field set to the timestamp of the last `git
+push` to this repo's `main` branch (`BUILD_TIMESTAMP` in `const.py`). After a HACS
+redownload + restart, check that field to confirm you're actually running the build you think you
+are.
+
 ## Deviations from the brief's suggested file layout
 
 - **No `text.py`/`number.py`**: the brief made these conditional on "if using entities" for
@@ -220,6 +279,21 @@ cards:
 - **Added `assignment.py`**: pure midpoint-interval matching/arming logic, split out of
   `coordinator.py` so the person-matching decision (section 3 of the brief) is unit-testable
   without a Home Assistant runtime, same as the parser and formulas.
+
+## History of this integration
+
+The original build brief specified openScale-style BMI/age/sex body-composition sensors (BMI, lean
+mass, body water, absolute body fat) as first-class entities/CSV fields. Those were later removed
+entirely in favour of the single baseline-relative body-fat number described above, at the user's
+explicit request, once it became clear the absolute numbers weren't calibrated enough to be useful
+on their own. The matching algorithm was also replaced along the way (nearest-known-weight +
+tolerance -> weight/impedance midpoint intervals, also at the user's request), and the "Add person"
+registration flow was reworked twice: first to keep the dialog open until a weighing is actually
+captured (instead of closing immediately regardless of outcome), then to not create the person's
+profile *at all* until that capture succeeds (instead of creating it up front and only capturing a
+reference value afterward). If you're reading old issues/commits referencing BMI/lean
+mass/body water sensors, a `match_tolerance_kg` option, or a person existing before their first
+weigh-in, that's why - it hasn't been that way for a while.
 
 ## Development
 
@@ -236,25 +310,31 @@ lightweight placeholder package objects for `custom_components`/`custom_componen
 helpers can be unit tested with plain `pytest`, even though they use the same intra-package
 relative imports (`from .const import ...`) that the real integration uses inside Home Assistant.
 
-- `tests/test_scale_parser.py` - frame validation, session dedup, the 60 s gap rule, and the
+- `tests/test_scale_parser.py` - frame validation, session dedup, the 60 s/3 s gap rules (a locked
+  session finalizes much faster than an unlocked one - see "Hardware notes" above), and the
   reference session decode (61.90 kg / impedance 6000).
-- `tests/test_body_composition.py` - all four body-fat formulas, BMI, lean mass, body water,
-  clamping, and divide-by-zero guards.
+- `tests/test_body_composition.py` - all four body-fat formulas, clamping, divide-by-zero guards,
+  and the baseline/relative-body-fat calculations.
 - `tests/test_session_engine.py` - registration-arming bypass, weight/impedance midpoint-interval
   matching (agreement, disagreement + weight×impedance tiebreak, unseeded fallback), and CSV
-  reassignment (row movement + recomputed refs).
+  reassignment (row movement + recomputed refs + baseline-relative recompute).
 
 ### Real Home Assistant integration tests
 
 `tests/test_ha_integration.py` runs the config flow, options flow, entity setup, and the full
 weighing pipeline against an actual `homeassistant` core instance, via
 [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component).
-This is what caught two real bugs that plain import-checking missed: `OptionsFlow.config_entry`
-becoming a read-only property in recent Home Assistant (assigning to it in `__init__` used to work
-silently and now raises), and `has_entity_name` + device-name auto-naming producing entity IDs like
-`select.okok_body_composition_scale_reassign_last_measurement` instead of the documented
-`select.okok_scale_reassign_last` (fixed by pinning `self.entity_id` explicitly on every entity
-instead of relying on auto-generation).
+This is what caught several real bugs that plain import-checking missed, including:
+`OptionsFlow.config_entry` becoming a read-only property in recent Home Assistant (assigning to it
+in `__init__` used to work silently and now raises); `has_entity_name` + device-name auto-naming
+producing entity IDs like `select.okok_body_composition_scale_reassign_last_measurement` instead of
+the documented `select.okok_scale_reassign_last`; and a person who missed their registration window
+becoming permanently unmatchable rather than just missing that one weighing, since the matching
+algorithm has no "too far" fallback once anyone else is seeded (fixed by the
+`button.okok_scale_<person>_arm_capture` re-arm button - see "Re-arming a person's capture window"
+above). Also covers the "Add person" dialog's capture-before-create flow end to end: not-yet-locked
+live readings, a genuine capture, the timeout error path, and an abandoned-dialog session getting
+recovered via normal matching instead of silently lost.
 
 ```bash
 .venv/bin/pip install pytest-homeassistant-custom-component dbus-fast
