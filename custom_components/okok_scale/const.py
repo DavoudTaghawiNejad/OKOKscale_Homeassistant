@@ -113,8 +113,11 @@ REASSIGN_MAX_AGE_SECONDS = 3600
 #: uncalibrated, impedance-blind - see body_composition.py) BMI-based
 #: estimate; body_fat_relative_pct is that same value expressed against
 #: the person's baseline (100% = baseline average). body_water_pct is the
-#: Sun et al. 2003 BIA regression estimate, which does use resistance_ohms.
-#: See body_composition.py and coordinator.py for how each is derived.
+#: Sun et al. 2003 BIA regression estimate, which does use resistance_ohms;
+#: body_water_relative_pct is that value against the person's own water
+#: baseline, same idea as body_fat_relative_pct but tracked independently
+#: (see models.Person.baseline_body_water_pct). See body_composition.py
+#: and coordinator.py for how each is derived.
 #:
 #: New columns are appended, never inserted in the middle - csv_logger.
 #: append_row migrates any pre-existing file's header to match this list
@@ -129,6 +132,7 @@ CSV_FIELDNAMES = [
     "body_fat_relative_pct",
     "resistance_ohms",
     "body_water_pct",
+    "body_water_relative_pct",
 ]
 
 # --- Diagnostics -----------------------------------------------------------

@@ -4,9 +4,11 @@ import pytest
 
 from custom_components.okok_scale.body_composition import (
     calc_baseline_body_fat_pct,
+    calc_baseline_body_water_pct,
     calc_body_fat_pct,
     calc_body_water_pct,
     calc_relative_body_fat_pct,
+    calc_relative_body_water_pct,
     calc_resistance_ohms,
 )
 from custom_components.okok_scale.const import (
@@ -152,3 +154,36 @@ def test_body_water_pct_clamped_to_plausible_range() -> None:
     # at the ceiling rather than exceeding the person's own body weight.
     high = calc_body_water_pct(weight_kg=61.9, height_cm=178, sex="male", impedance=100)
     assert high == BODY_WATER_MAX_PCT
+
+
+def test_water_baseline_is_the_average_of_recent_values() -> None:
+    assert calc_baseline_body_water_pct([58.0, 58.4, 57.5, 58.1, 57.9]) == pytest.approx(58.0, abs=0.05)
+
+
+def test_water_baseline_works_with_fewer_than_five_values() -> None:
+    assert calc_baseline_body_water_pct([58.0, 58.4]) == pytest.approx(58.2)
+    assert calc_baseline_body_water_pct([58.0]) == pytest.approx(58.0)
+
+
+def test_water_baseline_is_none_with_no_values() -> None:
+    assert calc_baseline_body_water_pct([]) is None
+
+
+def test_relative_body_water_pct_at_baseline_is_100() -> None:
+    assert calc_relative_body_water_pct(58.0, 58.0) == pytest.approx(100.0)
+
+
+def test_relative_body_water_pct_above_and_below_baseline() -> None:
+    # A same-day reading above/below the personal baseline - e.g. more or
+    # less hydrated than usual - not necessarily anything alarming.
+    assert calc_relative_body_water_pct(59.5, 58.0) == pytest.approx(102.6, abs=0.1)
+    assert calc_relative_body_water_pct(56.5, 58.0) == pytest.approx(97.4, abs=0.1)
+
+
+def test_relative_body_water_pct_none_without_baseline() -> None:
+    assert calc_relative_body_water_pct(58.0, None) is None
+    assert calc_relative_body_water_pct(58.0, 0) is None
+
+
+def test_relative_body_water_pct_none_without_absolute_value() -> None:
+    assert calc_relative_body_water_pct(None, 58.0) is None

@@ -170,6 +170,7 @@ class TestCsvReassignment:
             target_age_years=38,
             target_sex="female",
             target_baseline_body_fat_pct=30.0,
+            target_baseline_body_water_pct=50.0,
         )
 
         assert len(moved) == 1
@@ -184,6 +185,9 @@ class TestCsvReassignment:
         # doesn't depend on the person - is just carried over unchanged.
         assert moved[0]["body_water_pct"] == pytest.approx(45.8)
         assert moved[0]["resistance_ohms"] == ""
+        # ... and body_water_relative_pct against her own (separately
+        # tracked) water baseline, 45.8 / 50.0 * 100.
+        assert moved[0]["body_water_relative_pct"] == pytest.approx(91.6)
 
         # "me"'s CSV now ends with their own earlier, correct session.
         assert read_last_weight_kg(me_csv) == pytest.approx(61.9)
@@ -211,6 +215,7 @@ class TestCsvReassignment:
             me_csv, wife_csv, "sess-1", target_height_cm=165, target_age_years=38, target_sex="female"
         )
         assert moved[0]["body_fat_relative_pct"] is None
+        assert moved[0]["body_water_relative_pct"] is None
 
     def test_reassign_nonexistent_session_is_a_noop(self, tmp_path: Path) -> None:
         me_csv = tmp_path / "me.csv"

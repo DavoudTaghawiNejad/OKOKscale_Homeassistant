@@ -33,6 +33,13 @@ class Person:
     #: readings, capped at BASELINE_MEASUREMENT_COUNT. Source data for both
     #: the automatic first-time baseline and "reset baseline".
     recent_body_fat_history: list[float] = field(default_factory=list)
+    #: Same as baseline_body_fat_pct/recent_body_fat_history, but for
+    #: body-water% (see body_composition.calc_body_water_pct). Tracked
+    #: separately since a session without a usable impedance reading (e.g.
+    #: it never locked) has a body-fat% but no body-water%, so the two
+    #: histories can drift out of sync with each other.
+    baseline_body_water_pct: float | None = None
+    recent_body_water_history: list[float] = field(default_factory=list)
 
 
 @dataclass

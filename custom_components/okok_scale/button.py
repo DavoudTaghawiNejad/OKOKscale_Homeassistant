@@ -110,10 +110,11 @@ class OkokScaleArmCaptureButton(ButtonEntity):
 
 
 class OkokScaleResetBaselineButton(ButtonEntity):
-    """Pressing this sets this person's body-fat baseline (100% reference
-    point) to the average of their most recent measurements.
+    """Pressing this sets this person's body-fat *and* body-water baselines
+    (100% reference points) to the average of their most recent
+    measurements of each.
 
-    See sensor.py's body_fat_relative sensor and
+    See sensor.py's body_fat_relative/body_water_relative sensors and
     coordinator.async_reset_baseline. Useful any time you want to reset
     "100%" to where they are now, e.g. at the start of a new fitness phase.
     """
@@ -133,8 +134,8 @@ class OkokScaleResetBaselineButton(ButtonEntity):
     async def async_press(self) -> None:
         ok = await self._coordinator.async_reset_baseline(self._person_id)
         message = (
-            f"{self._person_name}'s baseline has been reset to their recent average - "
-            "it's now their new 100%."
+            f"{self._person_name}'s body-fat and body-water baselines have been reset to their "
+            "recent averages - that's now their new 100% for both."
             if ok
             else f"{self._person_name} has no measurements yet, so there's nothing to set a baseline from."
         )

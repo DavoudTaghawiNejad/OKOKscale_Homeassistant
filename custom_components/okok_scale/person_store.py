@@ -35,6 +35,8 @@ def _person_to_dict(person: Person) -> dict[str, Any]:
         "ref_impedance": person.ref_impedance,
         "baseline_body_fat_pct": person.baseline_body_fat_pct,
         "recent_body_fat_history": person.recent_body_fat_history,
+        "baseline_body_water_pct": person.baseline_body_water_pct,
+        "recent_body_water_history": person.recent_body_water_history,
     }
 
 
@@ -51,6 +53,8 @@ def _person_from_dict(data: dict[str, Any]) -> Person:
         ref_impedance=data.get("ref_impedance"),
         baseline_body_fat_pct=data.get("baseline_body_fat_pct"),
         recent_body_fat_history=list(data.get("recent_body_fat_history") or []),
+        baseline_body_water_pct=data.get("baseline_body_water_pct"),
+        recent_body_water_history=list(data.get("recent_body_water_history") or []),
     )
 
 

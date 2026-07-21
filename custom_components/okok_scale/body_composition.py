@@ -186,3 +186,28 @@ def calc_relative_body_fat_pct(body_fat_pct: float | None, baseline_pct: float |
     if body_fat_pct is None or not baseline_pct:
         return None
     return round(body_fat_pct / baseline_pct * 100, 1)
+
+
+def calc_baseline_body_water_pct(recent_values: Sequence[float]) -> float | None:
+    """Same idea as calc_baseline_body_fat_pct, for body-water% - the
+    average of a person's N most recent calc_body_water_pct readings.
+    """
+    if not recent_values:
+        return None
+    return round(sum(recent_values) / len(recent_values), 1)
+
+
+def calc_relative_body_water_pct(body_water_pct: float | None, baseline_pct: float | None) -> float | None:
+    """Body-water% expressed relative to a personal baseline (baseline =
+    100%). None until a baseline exists yet (see
+    calc_baseline_body_water_pct).
+
+    Unlike body fat, the absolute body-water% is already exposed directly
+    (see calc_body_water_pct's own docstring on why) - this is an
+    additional, complementary view for spotting day-to-day hydration
+    swings against a personal norm, not a stand-in for a missing absolute
+    number.
+    """
+    if body_water_pct is None or not baseline_pct:
+        return None
+    return round(body_water_pct / baseline_pct * 100, 1)

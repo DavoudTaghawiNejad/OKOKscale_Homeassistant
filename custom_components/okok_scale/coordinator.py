@@ -26,9 +26,11 @@ from homeassistant.util import dt as dt_util
 from .assignment import is_registration_armed, match_person
 from .body_composition import (
     calc_baseline_body_fat_pct,
+    calc_baseline_body_water_pct,
     calc_body_fat_pct,
     calc_body_water_pct,
     calc_relative_body_fat_pct,
+    calc_relative_body_water_pct,
     calc_resistance_ohms,
 )
 from .const import (
@@ -279,6 +281,10 @@ class OkokScaleCoordinator:
         # baseline itself the first time it fills up (see
         # const.BASELINE_MEASUREMENT_COUNT) - only touched once per
         # session, using the final value, not once per logged frame below.
+        # Body fat and body water are tracked independently: a session
+        # whose final frame never locked can have a body-fat% (BMI-based,
+        # impedance-blind) but no body-water% (needs impedance), so one
+        # history can advance without the other.
         if final_body_fat_pct is not None:
             person.recent_body_fat_history = (person.recent_body_fat_history + [final_body_fat_pct])[
                 -BASELINE_MEASUREMENT_COUNT:
@@ -286,7 +292,18 @@ class OkokScaleCoordinator:
             if person.baseline_body_fat_pct is None and len(person.recent_body_fat_history) == BASELINE_MEASUREMENT_COUNT:
                 person.baseline_body_fat_pct = calc_baseline_body_fat_pct(person.recent_body_fat_history)
 
+        if final_body_water_pct is not None:
+            person.recent_body_water_history = (person.recent_body_water_history + [final_body_water_pct])[
+                -BASELINE_MEASUREMENT_COUNT:
+            ]
+            if (
+                person.baseline_body_water_pct is None
+                and len(person.recent_body_water_history) == BASELINE_MEASUREMENT_COUNT
+            ):
+                person.baseline_body_water_pct = calc_baseline_body_water_pct(person.recent_body_water_history)
+
         final_relative_pct = calc_relative_body_fat_pct(final_body_fat_pct, person.baseline_body_fat_pct)
+        final_relative_water_pct = calc_relative_body_water_pct(final_body_water_pct, person.baseline_body_water_pct)
 
         # Log every frame of the session (the settling curve), not just the
         # final value, so the CSV is directly graphable.
@@ -297,6 +314,7 @@ class OkokScaleCoordinator:
             frame_relative_pct = calc_relative_body_fat_pct(frame_body_fat_pct, person.baseline_body_fat_pct)
             frame_resistance_ohms = calc_resistance_ohms(frame.impedance)
             frame_body_water_pct = calc_body_water_pct(frame.weight_kg, person.height_cm, person.sex, frame.impedance)
+            frame_relative_water_pct = calc_relative_body_water_pct(frame_body_water_pct, person.baseline_body_water_pct)
             await self.csv_logger.async_append_row(
                 person_id,
                 {
@@ -308,6 +326,7 @@ class OkokScaleCoordinator:
                     "body_fat_relative_pct": frame_relative_pct,
                     "resistance_ohms": frame_resistance_ohms,
                     "body_water_pct": frame_body_water_pct,
+                    "body_water_relative_pct": frame_relative_water_pct,
                 },
             )
 
@@ -327,6 +346,7 @@ class OkokScaleCoordinator:
             "body_fat_relative_pct": final_relative_pct,
             "resistance_ohms": final_resistance_ohms,
             "body_water_pct": final_body_water_pct,
+            "body_water_relative_pct": final_relative_water_pct,
         }
         self.person_data[person_id] = measurement
         self.last_measurement = measurement
@@ -383,6 +403,8 @@ class OkokScaleCoordinator:
 
         body_fat_pct = _optional_float(row.get("body_fat_pct"))
         baseline = person.baseline_body_fat_pct if person is not None else None
+        body_water_pct = _optional_float(row.get("body_water_pct"))
+        water_baseline = person.baseline_body_water_pct if person is not None else None
 
         self.person_data[person_id] = {
             "session_id": row.get("session_id"),
@@ -394,7 +416,8 @@ class OkokScaleCoordinator:
             "body_fat_pct": body_fat_pct,
             "body_fat_relative_pct": calc_relative_body_fat_pct(body_fat_pct, baseline),
             "resistance_ohms": _optional_float(row.get("resistance_ohms")),
-            "body_water_pct": _optional_float(row.get("body_water_pct")),
+            "body_water_pct": body_water_pct,
+            "body_water_relative_pct": calc_relative_body_water_pct(body_water_pct, water_baseline),
         }
 
     # ---- registration -----------------------------------------------------
@@ -492,17 +515,25 @@ class OkokScaleCoordinator:
         await self.store.async_clear_pending_registration()
 
     async def async_reset_baseline(self, person_id: str) -> bool:
-        """Recompute a person's baseline from their current rolling
-        history (their most recent BASELINE_MEASUREMENT_COUNT absolute
-        body-fat% readings - fewer if they don't have that many yet).
+        """Recompute a person's body-fat and body-water baselines from
+        their current rolling histories (their most recent
+        BASELINE_MEASUREMENT_COUNT readings of each - fewer if they don't
+        have that many yet). The two reset together, since "start tracking
+        fresh from today" naturally applies to both - even though the
+        histories themselves are tracked independently (see
+        _async_record_measurement) and so can be reset independently too.
 
-        Returns False (a no-op) if the person has no history at all yet.
+        Returns False (a no-op) only if the person has no history for
+        either metric yet.
         """
         person = self.store.people.get(person_id)
-        if person is None or not person.recent_body_fat_history:
+        if person is None or (not person.recent_body_fat_history and not person.recent_body_water_history):
             return False
 
-        person.baseline_body_fat_pct = calc_baseline_body_fat_pct(person.recent_body_fat_history)
+        if person.recent_body_fat_history:
+            person.baseline_body_fat_pct = calc_baseline_body_fat_pct(person.recent_body_fat_history)
+        if person.recent_body_water_history:
+            person.baseline_body_water_pct = calc_baseline_body_water_pct(person.recent_body_water_history)
         await self.store.async_update_person(person)
         await self._async_refresh_person_from_csv(person_id)
         async_dispatcher_send(self.hass, f"{SIGNAL_PERSON_UPDATED}_{self.entry_id}_{person_id}")
@@ -540,6 +571,7 @@ class OkokScaleCoordinator:
             target_sex=target_person.sex,
             target_formula=self.body_fat_formula,
             target_baseline_body_fat_pct=target_person.baseline_body_fat_pct,
+            target_baseline_body_water_pct=target_person.baseline_body_water_pct,
         )
         if not moved_rows:
             return False

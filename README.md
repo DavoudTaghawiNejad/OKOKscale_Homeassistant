@@ -125,11 +125,12 @@ resets on every new weighing.
 
 ## Body composition: weight and body fat relative to a personal baseline
 
-Only two numbers are shown per person: their **weight**, and their **body fat relative to their
-own baseline**, where the baseline = 100%. Nothing else (BMI, lean mass, body water, absolute body
-fat, raw impedance) is exposed as its own sensor or card field anymore - an earlier version of this
-integration did expose all of those, sourced from openScale's BMI/age/sex formulas, but they were
-removed in favour of just this one, more honestly-framed number.
+Body fat is only ever shown **relative to its own baseline** (100% = baseline), never as an
+absolute number - see "Why relative, not absolute" below. An earlier version of this integration
+exposed BMI, lean mass, body water, absolute body fat, and raw impedance as first-class
+sensors/CSV fields, sourced from openScale's BMI/age/sex formulas; those were removed in favour of
+just the one honestly-framed relative number (body water was later reintroduced on a different,
+more defensible footing - see "Body water (BIA)" below).
 
 **Why relative, not absolute**: none of the available body-*fat* formulas actually consume the
 scale's bio-impedance reading - they're the BMI/age/sex estimation formulas published on the
@@ -142,27 +143,32 @@ cancels out (it's applied consistently to every reading for that person), leavin
 more meaningful: "am I trending up or down from where I started." (Body *water* is a different
 story - see "Body water (BIA)" below - since that one does consume the scale's impedance reading.)
 
-**How the baseline works**:
+**How the baseline works**: the same mechanism applies independently to both body fat and body
+water (see "Body water (BIA)" below) - each has its own rolling history and its own baseline,
+described here in terms of body fat.
 - Every completed weighing computes an absolute, uncalibrated body-fat% (formula selectable in
   Configure -> Settings -> `body_fat_formula`; same four options as before, now purely an internal
-  input rather than a displayed value).
+  input rather than a displayed value) and, separately, a body-water% (see below).
 - Each person keeps a rolling window of their `BASELINE_MEASUREMENT_COUNT` (5) most recent
-  absolute body-fat% readings.
-- **The first time that window fills up** (their 5th-ever weighing), its average becomes their
-  baseline - the fixed 100% reference point. Until then, `sensor.okok_scale_<person>_body_fat_relative`
-  reads `unknown`: there's nothing meaningful to show relative to a baseline that doesn't exist yet.
-- The baseline then stays fixed - it does **not** silently drift with every new weighing - until
+  readings of each metric. These two histories can drift out of sync: a session whose final frame
+  never locked has a body-fat% (BMI-based, doesn't need impedance) but no body-water% (does).
+- **The first time a given window fills up** (that metric's 5th-ever reading), its average becomes
+  that metric's baseline - the fixed 100% reference point. Until then, the corresponding relative
+  sensor reads `unknown`: there's nothing meaningful to show relative to a baseline that doesn't
+  exist yet.
+- Each baseline then stays fixed - it does **not** silently drift with every new weighing - until
   you explicitly reset it.
-- `button.okok_scale_<person>_reset_baseline` sets a new 100% reference point from whatever's
-  currently in that rolling window (their most recent 5 readings, or fewer if they don't have 5
-  yet). Use this any time you want "100%" to mean "right now" - e.g. at the start of a new fitness
-  phase.
-- A subsequent reading's relative percentage is `absolute_body_fat_pct / baseline_body_fat_pct *
-  100` - so 105% means "5% higher (relative) body fat than baseline", not "5 percentage points".
+- `button.okok_scale_<person>_reset_baseline` sets a new 100% reference point for **both** metrics
+  at once, from whatever's currently in each rolling window (the most recent 5 readings of each,
+  or fewer if they don't have 5 yet). Use this any time you want "100%" to mean "right now" for
+  both - e.g. at the start of a new fitness phase.
+- A subsequent reading's relative percentage is `absolute_pct / baseline_pct * 100` - so 105%
+  means "5% higher (relative) than baseline", not "5 percentage points".
 
 All of this lives in
 [`custom_components/okok_scale/body_composition.py`](custom_components/okok_scale/body_composition.py)
-(the pure formulas + `calc_baseline_body_fat_pct`/`calc_relative_body_fat_pct`) and
+(the pure formulas + `calc_baseline_body_fat_pct`/`calc_relative_body_fat_pct` and their
+`_body_water_` counterparts) and
 [`coordinator.py`](custom_components/okok_scale/coordinator.py) (the rolling-history/baseline
 bookkeeping), unit-tested in
 [`tests/test_body_composition.py`](tests/test_body_composition.py) and
@@ -186,26 +192,41 @@ Sun 2003 is a well-validated *general-population* regression (roughly 3-5% of bo
 error against a 4-compartment reference method in the original study), not a regression calibrated
 for this specific scale's electrodes - so, same as body fat, treat the absolute percentage as a
 good average-case estimate and trust changes over time under consistent measurement conditions
-(not right after a workout or a big meal) more than any single reading. Unlike body fat, it's
-exposed as-is rather than gated behind a personal baseline, since it's a genuine physical-quantity
-regression rather than a BMI proxy.
+(not right after a workout or a big meal) more than any single reading. Unlike body fat, the
+*absolute* percentage is exposed as its own entity rather than only relative to a baseline, since
+it's a genuine physical-quantity regression rather than a BMI proxy.
 
-`resistance_ohms` and `body_water_pct` are logged to CSV for every frame (see "CSV logging and
-downloads" below) and carried as attributes on `sensor.okok_scale_<person>_weight`.
+That said, a **relative-to-baseline** view exists for body water too -
+`sensor.okok_scale_<person>_body_water_relative` - using the exact same baseline mechanism as body
+fat (see "How the baseline works" above), just tracked independently. This is for spotting
+day-to-day hydration swings against your own personal norm (e.g. "noticeably more dehydrated than
+usual today") on top of the absolute figure, not a replacement for it - both entities exist side by
+side, unlike body fat where only the relative one is shown.
+
+`resistance_ohms`, `body_water_pct`, and `body_water_relative_pct` are logged to CSV for every
+frame (see "CSV logging and downloads" below). `body_water_pct` is `sensor.okok_scale_<person>_
+body_water`'s state (with `resistance_ohms` as its attribute); `body_water_relative_pct` is
+`sensor.okok_scale_<person>_body_water_relative`'s state (with `baseline_body_water_pct` and
+`absolute_body_water_pct` as attributes - same pattern as `body_fat_relative`).
 
 ## Entities
 
 Per registered person (`<person>` = their slugified id):
 
-- `sensor.okok_scale_<person>_weight` (kg) - also carries `csv_download_url`, `resistance_ohms`,
-  and `body_water_pct` (see "Body water (BIA)" above)
+- `sensor.okok_scale_<person>_weight` (kg) - also carries `csv_download_url`
 - `sensor.okok_scale_<person>_body_fat_relative` (%, 100% = baseline) - carries
   `baseline_body_fat_pct`, `absolute_body_fat_pct`, and `measurements_until_baseline` as attributes
+- `sensor.okok_scale_<person>_body_water` (%) - the Sun 2003 BIA estimate (see "Body water (BIA)"
+  above); carries `resistance_ohms` as an attribute
+- `sensor.okok_scale_<person>_body_water_relative` (%, 100% = baseline) - carries
+  `baseline_body_water_pct`, `absolute_body_water_pct`, and `measurements_until_baseline` as
+  attributes (independent baseline from `body_fat_relative`'s - see "How the baseline works" above)
 - `button.okok_scale_<person>_download_csv` - posts a persistent notification with the CSV link
 - `button.okok_scale_<person>_arm_capture` - opens a fresh 120 s reference-capture window (see
   "Re-arming a person's capture window" above)
-- `button.okok_scale_<person>_reset_baseline` - sets their 100% reference point to the average of
-  their most recent 5 weighings (see "Body composition" above)
+- `button.okok_scale_<person>_reset_baseline` - sets **both** their body-fat and body-water 100%
+  reference points to the average of each metric's most recent 5 readings (see "How the baseline
+  works" above)
 
 Integration-wide:
 
@@ -216,15 +237,15 @@ Integration-wide:
 
 Every frame of a session is appended (not just the final value), so each person's file is a
 directly graphable settling-curve-plus-trend history:
-`time,session_id,weight_kg,impedance,body_fat_pct,body_fat_relative_pct,resistance_ohms,body_water_pct`.
-`body_fat_pct` is the absolute (uncalibrated) estimate; `body_fat_relative_pct` is that row's value
-against whatever the person's baseline was *at the time the row was written* (unlike the live
-sensor, which always reflects the *current* baseline - resetting the baseline doesn't rewrite CSV
-history). `resistance_ohms`/`body_water_pct` are the BIA figures described in "Body water (BIA)"
-above. New columns are always appended at the end, never inserted in the middle - if a person's
-file already existed with an older, shorter header, `csv_logger.append_row` migrates it in place
-(rewriting the header and backfilling the new columns blank for old rows) the next time anything is
-appended, rather than silently misaligning columns.
+`time,session_id,weight_kg,impedance,body_fat_pct,body_fat_relative_pct,resistance_ohms,body_water_pct,body_water_relative_pct`.
+`body_fat_pct`/`body_water_pct` are the absolute estimates; `body_fat_relative_pct`/
+`body_water_relative_pct` are those rows' values against whatever that metric's baseline was *at
+the time the row was written* (unlike the live sensors, which always reflect the *current*
+baseline - resetting a baseline doesn't rewrite CSV history). `resistance_ohms` is the BIA figure
+described in "Body water (BIA)" above. New columns are always appended at the end, never inserted
+in the middle - if a person's file already existed with an older, shorter header,
+`csv_logger.append_row` migrates it in place (rewriting the header and backfilling the new columns
+blank for old rows) the next time anything is appended, rather than silently misaligning columns.
 
 Files live at `<config>/okok_scale/csv/<person_id>.csv` - deliberately **outside** `config/www`,
 since that folder may not exist, mixes integration data into the user's own dashboard assets, and
@@ -256,8 +277,9 @@ without a Home Assistant runtime.
 
 Two cards, matching the two things there are to look at: today's numbers, and the trend.
 
-**Current values card** - weight, relative body fat, and the reset-baseline button, per person. No
-custom code needed, just a stock entities card (repeat per person, swapping the id):
+**Current values card** - weight, relative body fat, body water (absolute and relative), and the
+reset-baseline button, per person. No custom code needed, just a stock entities card (repeat per
+person, swapping the id; drop whichever body-water entity you don't want):
 
 ```yaml
 type: entities
@@ -265,12 +287,16 @@ title: Me
 entities:
   - sensor.okok_scale_me_weight
   - sensor.okok_scale_me_body_fat_relative
+  - sensor.okok_scale_me_body_water
+  - sensor.okok_scale_me_body_water_relative
   - button.okok_scale_me_reset_baseline
 ```
 
 **History card** - the bundled custom card, showing weight and relative body fat as two stacked
 line charts since the beginning of that person's measurements, with a person-tab switcher and a
-30d/90d/1y/all range picker:
+30d/90d/1y/all range picker. It predates body water and doesn't chart it yet - use the entities
+card above, or a stock `history-graph`/`statistics-graph` card pointed at
+`sensor.okok_scale_<person>_body_water`, in the meantime:
 
 ```yaml
 type: custom:okok-scale-card
@@ -294,6 +320,7 @@ cards:
     entities:
       - sensor.okok_scale_me_weight
       - sensor.okok_scale_me_body_fat_relative
+      - sensor.okok_scale_me_body_water
       - button.okok_scale_me_reset_baseline
   - type: custom:okok-scale-card
     default_range: 90d
@@ -340,8 +367,10 @@ Body water was later reintroduced on a different footing than the original BMI-b
 once the scale's raw impedance reading was decoded to be 10x true resistance in ohms (see "Body
 water (BIA)" above), a genuine bio-impedance regression (Sun et al. 2003, the same one openScale's
 own `StandardImpedanceLib.kt` uses) became possible - unlike the BMI-only body-fat formulas, this
-one actually consumes the measurement this scale exists to provide, so it's shown as a plain
-absolute figure rather than gated behind a personal baseline.
+one actually consumes the measurement this scale exists to provide, so its absolute figure is shown
+directly rather than only relative to a baseline. A relative-to-baseline view (`body_water_relative`)
+was added alongside it shortly after, reusing body fat's existing baseline mechanism but tracked as
+its own independent baseline - see "How the baseline works" above.
 
 ## Development
 
@@ -362,12 +391,22 @@ relative imports (`from .const import ...`) that the real integration uses insid
   session finalizes much faster than an unlocked one - see "Hardware notes" above), and the
   reference session decode (61.90 kg / impedance 6000).
 - `tests/test_body_composition.py` - all four body-fat formulas, clamping, divide-by-zero guards,
-  the baseline/relative-body-fat calculations, and the Sun 2003 body-water formula (raw-to-ohms
-  conversion, gender-specific coefficients, clamping).
+  the baseline/relative calculations for both body fat and body water, and the Sun 2003 body-water
+  formula (raw-to-ohms conversion, gender-specific coefficients, clamping).
 - `tests/test_session_engine.py` - registration-arming bypass, weight/impedance midpoint-interval
   matching (agreement, disagreement + weight×impedance tiebreak, unseeded fallback), CSV
   reassignment (row movement + recomputed refs + baseline-relative recompute), and CSV
   schema migration (appending to a file still on the pre-body-water header).
+
+`tests/test_person_store.py` sits in between: its two functions under test
+(`_person_to_dict`/`_person_from_dict`) are plain dict transforms with no Home Assistant runtime
+needed, but `person_store.py` itself does real `homeassistant.core`/`homeassistant.helpers.storage`
+imports (unlike the three pure modules above, which stay HA-import-free on purpose), so this file
+needs `homeassistant` pip-installed - same as the integration tests below - even though it doesn't
+need `pytest-homeassistant-custom-component`'s `hass` fixture. It's a regression test for a real
+bug: `baseline_body_water_pct`/`recent_body_water_history` were added to `models.Person` but never
+wired into serialization, so they silently reset to their defaults on every restart or config-entry
+reload, even though the equivalent body-fat fields persisted fine.
 
 ### Real Home Assistant integration tests
 

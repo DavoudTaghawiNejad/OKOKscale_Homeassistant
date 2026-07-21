@@ -270,11 +270,52 @@ async def test_full_weighing_pipeline_assigns_and_updates_sensors(configured_ent
     wife_weight_state = hass.states.get("sensor.okok_scale_wife_weight")
     assert float(wife_weight_state.state) == pytest.approx(78.0)
 
-    # The weight sensor also carries the BIA-derived figures for whoever's
-    # data is currently attributed to it.
-    me_weight_state = hass.states.get("sensor.okok_scale_me_weight")
-    assert me_weight_state.attributes["resistance_ohms"] == pytest.approx(600.0)
-    assert me_weight_state.attributes["body_water_pct"] == pytest.approx(58.0)
+    # The BIA-derived body-water figure gets its own entity (state = %,
+    # resistance_ohms as a supporting attribute), unlike absolute body fat
+    # which stays attribute-only since it isn't calibrated.
+    me_water_state = hass.states.get("sensor.okok_scale_me_body_water")
+    assert float(me_water_state.state) == pytest.approx(58.0)
+    assert me_water_state.attributes["resistance_ohms"] == pytest.approx(600.0)
+
+    # body_water_relative exists too (unknown until a baseline is
+    # established - see test_reset_baseline_button_resets_both_fat_and_water
+    # for the baseline machinery itself).
+    assert "sensor.okok_scale_me_body_water_relative" in hass.states.async_entity_ids()
+
+
+async def test_reset_baseline_button_resets_both_fat_and_water(configured_entry) -> None:
+    """The single reset_baseline button resets both the body-fat and
+    body-water baselines together (see coordinator.async_reset_baseline) -
+    even though the two rolling histories are tracked independently (a
+    session without a usable impedance reading advances one but not the
+    other), "start tracking fresh from today" naturally applies to both at
+    once, so there's one button rather than two.
+    """
+    hass, entry = configured_entry
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_add_person(name="Me", sex="male", age_years=40, height_cm=178)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = _coordinator(hass, entry)
+
+    # Simulate having accumulated history for both metrics already, with a
+    # stale baseline for each that the button press should overwrite.
+    person = coordinator.people["me"]
+    person.recent_body_fat_history = [16.0, 16.2, 16.4, 16.6, 16.8]
+    person.baseline_body_fat_pct = 15.0
+    person.recent_body_water_history = [57.0, 57.5, 58.0, 58.5, 59.0]
+    person.baseline_body_water_pct = 55.0
+    await coordinator.async_update_person(person)
+
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.okok_scale_me_reset_baseline"}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    updated = coordinator.people["me"]
+    assert updated.baseline_body_fat_pct == pytest.approx(16.4)
+    assert updated.baseline_body_water_pct == pytest.approx(58.0)
 
 
 async def test_csv_directory_exists_before_any_weighing(configured_entry) -> None:

@@ -1,17 +1,23 @@
 """Sensor platform for OKOK Body Composition Scale.
 
-Two sensors per registered person - weight, and body fat relative to their
-personal baseline (100% = baseline; see coordinator.py /
-body_composition.py for how the baseline itself is established/updated) -
-plus one integration-wide "last measurement" sensor that names whoever was
-most recently weighed and blanks itself after
-const.LAST_MEASUREMENT_TIMEOUT_SECONDS.
+Four sensors per registered person - weight, body fat relative to their
+personal baseline, body water (the absolute BIA estimate), and body water
+relative to its own (separately-tracked) baseline (100% = baseline; see
+coordinator.py / body_composition.py for how each baseline is
+established/updated) - plus one integration-wide "last measurement"
+sensor that names whoever was most recently weighed and blanks itself
+after const.LAST_MEASUREMENT_TIMEOUT_SECONDS.
 
-Only weight and the baseline-relative body-fat figure are exposed as
-entities. The scale's absolute body-fat estimate isn't calibrated (see
-body_composition.py's module docstring), so it's kept internal - available
-as an attribute on the relative sensor for transparency, but not promoted
-to its own card/sensor.
+Body fat's *absolute* estimate isn't calibrated (see body_composition.py's
+module docstring - it's a BMI/age/sex proxy that doesn't consume the
+scale's impedance reading at all), so it's kept internal - available as an
+attribute on the relative sensor for transparency, but not promoted to its
+own entity. Body water is different: it's a genuine bio-impedance (BIA)
+regression that does consume impedance (via resistance_ohms), so unlike
+body fat its absolute value is trustworthy enough to show as its own
+entity rather than only relative to a baseline - the relative sensor is an
+*additional* view for spotting hydration swings against a personal norm,
+not a replacement for the absolute one.
 
 Entities are push-updated via dispatcher signals fired by
 coordinator.OkokScaleCoordinator - there's no polling here.
@@ -63,6 +69,22 @@ PERSON_SENSOR_DESCRIPTIONS: tuple[OkokPersonSensorDescription, ...] = (
         suggested_display_precision=1,
         value_fn=lambda data: data.get("body_fat_relative_pct"),
     ),
+    OkokPersonSensorDescription(
+        key="body_water",
+        translation_key="body_water",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=1,
+        value_fn=lambda data: data.get("body_water_pct"),
+    ),
+    OkokPersonSensorDescription(
+        key="body_water_relative",
+        translation_key="body_water_relative",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=1,
+        value_fn=lambda data: data.get("body_water_relative_pct"),
+    ),
 )
 
 
@@ -81,7 +103,8 @@ async def async_setup_entry(
 
 
 class OkokScalePersonSensor(SensorEntity):
-    """One metric (weight or relative body fat) for one registered person."""
+    """One metric (weight, relative body fat, absolute body water, or
+    relative body water) for one registered person."""
 
     _attr_has_entity_name = True
     _attr_should_poll = False
@@ -110,12 +133,7 @@ class OkokScalePersonSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         if self.entity_description.key == "weight":
-            data = self._coordinator.person_data.get(self._person_id) or {}
-            return {
-                "csv_download_url": self._coordinator.csv_download_url(self._person_id),
-                "resistance_ohms": data.get("resistance_ohms"),
-                "body_water_pct": data.get("body_water_pct"),
-            }
+            return {"csv_download_url": self._coordinator.csv_download_url(self._person_id)}
         if self.entity_description.key == "body_fat_relative":
             person = self._coordinator.people.get(self._person_id)
             data = self._coordinator.person_data.get(self._person_id) or {}
@@ -124,6 +142,21 @@ class OkokScalePersonSensor(SensorEntity):
             return {
                 "baseline_body_fat_pct": baseline,
                 "absolute_body_fat_pct": data.get("body_fat_pct"),
+                "measurements_until_baseline": (
+                    max(0, BASELINE_MEASUREMENT_COUNT - history_count) if baseline is None else 0
+                ),
+            }
+        if self.entity_description.key == "body_water":
+            data = self._coordinator.person_data.get(self._person_id) or {}
+            return {"resistance_ohms": data.get("resistance_ohms")}
+        if self.entity_description.key == "body_water_relative":
+            person = self._coordinator.people.get(self._person_id)
+            data = self._coordinator.person_data.get(self._person_id) or {}
+            history_count = len(person.recent_body_water_history) if person is not None else 0
+            baseline = person.baseline_body_water_pct if person is not None else None
+            return {
+                "baseline_body_water_pct": baseline,
+                "absolute_body_water_pct": data.get("body_water_pct"),
                 "measurements_until_baseline": (
                     max(0, BASELINE_MEASUREMENT_COUNT - history_count) if baseline is None else 0
                 ),

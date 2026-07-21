@@ -15,7 +15,12 @@ import functools
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .body_composition import calc_body_fat_pct, calc_body_water_pct, calc_relative_body_fat_pct
+from .body_composition import (
+    calc_body_fat_pct,
+    calc_body_water_pct,
+    calc_relative_body_fat_pct,
+    calc_relative_body_water_pct,
+)
 from .const import CSV_FIELDNAMES, DEFAULT_BODY_FAT_FORMULA
 
 if TYPE_CHECKING:
@@ -115,16 +120,17 @@ def reassign_session(
     target_sex: str,
     target_formula: str = DEFAULT_BODY_FAT_FORMULA,
     target_baseline_body_fat_pct: float | None = None,
+    target_baseline_body_water_pct: float | None = None,
 ) -> list[dict[str, Any]]:
     """Move every row of `session_id` from one person's CSV to another's.
 
-    body_fat_pct, body_fat_relative_pct, and body_water_pct are recomputed
-    against the *target* person's height/age/sex/baseline before the rows
-    are written, since those were originally derived from whoever the
-    session was (wrongly) assigned to. resistance_ohms doesn't depend on
-    the person, so it's carried over unchanged. Returns the new rows as
-    written to `to_path` (used by the caller to recompute
-    ref_weight_kg/ref_impedance).
+    body_fat_pct, body_fat_relative_pct, body_water_pct, and
+    body_water_relative_pct are recomputed against the *target* person's
+    height/age/sex/baselines before the rows are written, since those were
+    originally derived from whoever the session was (wrongly) assigned to.
+    resistance_ohms doesn't depend on the person, so it's carried over
+    unchanged. Returns the new rows as written to `to_path` (used by the
+    caller to recompute ref_weight_kg/ref_impedance).
     """
     removed = delete_session_rows(from_path, session_id)
     moved: list[dict[str, Any]] = []
@@ -136,6 +142,7 @@ def reassign_session(
         )
         body_fat_relative_pct = calc_relative_body_fat_pct(body_fat_pct, target_baseline_body_fat_pct)
         body_water_pct = calc_body_water_pct(weight_kg, target_height_cm, target_sex, impedance)
+        body_water_relative_pct = calc_relative_body_water_pct(body_water_pct, target_baseline_body_water_pct)
         new_row: dict[str, Any] = {
             "time": row["time"],
             "session_id": row["session_id"],
@@ -145,6 +152,7 @@ def reassign_session(
             "body_fat_relative_pct": body_fat_relative_pct,
             "resistance_ohms": row.get("resistance_ohms", ""),
             "body_water_pct": body_water_pct,
+            "body_water_relative_pct": body_water_relative_pct,
         }
         append_row(to_path, new_row)
         moved.append(new_row)
