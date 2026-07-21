@@ -1,4 +1,5 @@
-"""Button platform: per-person download + re-arm-capture helper buttons.
+"""Button platform: per-person download, re-arm-capture, baseline, and
+history-management helper buttons.
 
 The weight sensor already carries `csv_download_url` as an attribute (for
 the custom card / a markdown dashboard link), but a button gives a
@@ -16,6 +17,13 @@ assignment.match_person) - they can never be auto-matched again, not
 just for that one missed weighing but for every one after it, until
 they get a reference somehow. This button re-arms the exact same
 capture window on demand, without needing to remove and re-add them.
+
+reset_baseline and clear_history are two different kinds of "start over":
+reset_baseline recalibrates "100%" from a person's *existing* recent
+history (nothing is deleted), while clear_history permanently deletes
+their CSV file and all tracked history/baselines - for when old data
+(a test/debug session, a mismatched weighing, wanting a genuinely blank
+slate) shouldn't factor into anything going forward at all.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ async def async_setup_entry(
         entities.append(OkokScaleDownloadCsvButton(coordinator, person))
         entities.append(OkokScaleArmCaptureButton(coordinator, person))
         entities.append(OkokScaleResetBaselineButton(coordinator, person))
+        entities.append(OkokScaleClearHistoryButton(coordinator, person))
     async_add_entities(entities)
 
 
@@ -146,6 +155,50 @@ class OkokScaleResetBaselineButton(ButtonEntity):
                 "title": f"OKOK Scale: {self._person_name}",
                 "message": message,
                 "notification_id": f"{DOMAIN}_{self._person_id}_reset_baseline",
+            },
+            blocking=False,
+        )
+
+
+class OkokScaleClearHistoryButton(ButtonEntity):
+    """Pressing this permanently deletes this person's weighing history:
+    their CSV file, reference weight/impedance, and both body-fat/body-
+    water baselines and rolling histories - as if they'd never weighed in.
+
+    Their registration (name, sex, age, height) is kept - use "Remove a
+    person" in Configure instead if you want to delete them entirely.
+    Unlike reset_baseline (which recalibrates "100%" from existing
+    history), this deletes the history itself and cannot be undone.
+
+    See coordinator.async_clear_history.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "clear_history"
+    _attr_icon = "mdi:delete-sweep"
+
+    def __init__(self, coordinator: OkokScaleCoordinator, person: Person) -> None:
+        self._coordinator = coordinator
+        self._person_id = person.id
+        self._person_name = person.name
+        self._attr_unique_id = f"{DOMAIN}_{person.id}_clear_history"
+        self.entity_id = f"button.{DOMAIN}_{person.id}_clear_history"
+        self._attr_device_info = coordinator.person_device_info(person)
+
+    async def async_press(self) -> None:
+        await self._coordinator.async_clear_history(self._person_id)
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": f"OKOK Scale: {self._person_name}",
+                "message": (
+                    f"{self._person_name}'s weighing history has been permanently deleted - "
+                    "their CSV file, reference weight/impedance, and both baselines are all "
+                    "gone, and this cannot be undone. Their profile is still registered - step "
+                    "on the scale to start building fresh history."
+                ),
+                "notification_id": f"{DOMAIN}_{self._person_id}_clear_history",
             },
             blocking=False,
         )

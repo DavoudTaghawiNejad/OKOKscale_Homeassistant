@@ -318,6 +318,50 @@ async def test_reset_baseline_button_resets_both_fat_and_water(configured_entry)
     assert updated.baseline_body_water_pct == pytest.approx(58.0)
 
 
+async def test_clear_history_button_wipes_data_but_keeps_registration(configured_entry) -> None:
+    """clear_history is the more drastic sibling of reset_baseline: it
+    deletes the CSV file outright and blanks ref_weight_kg/ref_impedance
+    and both baselines/histories, while leaving the person's own
+    registration (name/sex/age/height, and their entities) in place - a
+    real weighing afterwards should build fresh history from nothing.
+    """
+    hass, entry = configured_entry
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_add_person(name="Me", sex="male", age_years=40, height_cm=178)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_arm_registration("me")
+    await coordinator._async_finish_session(_build_session(*F_6190_LOCKED, now=1000.0))
+    await hass.async_block_till_done()
+
+    csv_path = coordinator.csv_logger.path_for("me")
+    assert csv_path.exists()
+    assert float(hass.states.get("sensor.okok_scale_me_weight").state) == pytest.approx(61.9)
+
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.okok_scale_me_clear_history"}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    assert not csv_path.exists()
+
+    cleared = coordinator.people["me"]
+    assert cleared.name == "Me"  # registration itself is untouched
+    assert cleared.ref_weight_kg is None
+    assert cleared.ref_impedance is None
+    assert cleared.baseline_body_fat_pct is None
+    assert cleared.recent_body_fat_history == []
+    assert cleared.baseline_body_water_pct is None
+    assert cleared.recent_body_water_history == []
+
+    # The weight sensor still exists (person wasn't removed) but has
+    # nothing to show anymore.
+    assert hass.states.get("sensor.okok_scale_me_weight").state == "unknown"
+
+
 async def test_csv_directory_exists_before_any_weighing(configured_entry) -> None:
     """Previously, the CSV directory only got created on the first
     weighing (see csv_logger.ensure_parent_dir), but the static download

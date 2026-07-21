@@ -97,7 +97,8 @@
     "button": {
       "download_csv": { "name": "Download CSV" },
       "arm_capture": { "name": "Arm capture" },
-      "reset_baseline": { "name": "Reset baseline" }
+      "reset_baseline": { "name": "Reset baseline" },
+      "clear_history": { "name": "Clear history" }
     }
   }
 }

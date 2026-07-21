@@ -116,6 +116,23 @@ body-composition fields for the *new* person, since those depend on height/age/s
 people's reference weights, refreshes every affected sensor, and then resets itself back to
 `(no change)`. Reassignment requests older than one hour are ignored as stale.
 
+### Starting fresh / clearing history
+
+Two different buttons handle two different meanings of "start over" for a person:
+
+- `button.okok_scale_<person>_reset_baseline` - recalibrates "100%" from their *existing* recent
+  history. Nothing is deleted; see "How the baseline works" above.
+- `button.okok_scale_<person>_clear_history` - the more drastic option: **permanently deletes**
+  their CSV file and resets `ref_weight_kg`/`ref_impedance` and both baselines/rolling histories to
+  blank, as if they had never weighed in. Their registration (name/sex/age/height) and entities are
+  untouched - this is not the same as "Remove a person," which deletes the person entirely. There's
+  no confirmation dialog and no undo; the CSV file is gone for good. See
+  `coordinator.async_clear_history` / `csv_logger.delete_csv`.
+
+Neither button touches Home Assistant's own recorder history (the graphs/statistics behind the
+entities) - that's a separate system; purge it via Developer Tools -> Statistics if you want those
+clean too.
+
 ## `sensor.okok_scale_last_measurement`
 
 Shows the name of whoever was most recently weighed, with the full measurement (weight, absolute
@@ -227,6 +244,9 @@ Per registered person (`<person>` = their slugified id):
 - `button.okok_scale_<person>_reset_baseline` - sets **both** their body-fat and body-water 100%
   reference points to the average of each metric's most recent 5 readings (see "How the baseline
   works" above)
+- `button.okok_scale_<person>_clear_history` - **permanently deletes** their CSV file and resets
+  reference weight/impedance and both baselines/histories to blank (see "Starting fresh / clearing
+  history" above) - keeps their registration, unlike "Remove a person"
 
 Integration-wide:
 
@@ -395,8 +415,9 @@ relative imports (`from .const import ...`) that the real integration uses insid
   formula (raw-to-ohms conversion, gender-specific coefficients, clamping).
 - `tests/test_session_engine.py` - registration-arming bypass, weight/impedance midpoint-interval
   matching (agreement, disagreement + weight×impedance tiebreak, unseeded fallback), CSV
-  reassignment (row movement + recomputed refs + baseline-relative recompute), and CSV
-  schema migration (appending to a file still on the pre-body-water header).
+  reassignment (row movement + recomputed refs + baseline-relative recompute), CSV schema migration
+  (appending to a file still on the pre-body-water header), and CSV deletion (the "clear history"
+  button's underlying `delete_csv`).
 
 `tests/test_person_store.py` sits in between: its two functions under test
 (`_person_to_dict`/`_person_from_dict`) are plain dict transforms with no Home Assistant runtime

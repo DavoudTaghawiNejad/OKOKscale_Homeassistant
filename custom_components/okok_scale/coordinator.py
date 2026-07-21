@@ -539,6 +539,36 @@ class OkokScaleCoordinator:
         async_dispatcher_send(self.hass, f"{SIGNAL_PERSON_UPDATED}_{self.entry_id}_{person_id}")
         return True
 
+    async def async_clear_history(self, person_id: str) -> bool:
+        """Irreversibly wipe a person's weighing history: permanently
+        delete their CSV file, and reset ref_weight_kg/ref_impedance and
+        both body-fat/body-water baselines + rolling histories - as if
+        they had never weighed in. Their registration (name/sex/age/
+        height) is untouched; use async_remove_person instead to delete
+        the person entirely.
+
+        Returns False (a no-op) if the person doesn't exist.
+        """
+        person = self.store.people.get(person_id)
+        if person is None:
+            return False
+
+        await self.csv_logger.async_delete_csv(person_id)
+
+        person.baseline_body_fat_pct = None
+        person.recent_body_fat_history = []
+        person.baseline_body_water_pct = None
+        person.recent_body_water_history = []
+        await self.store.async_update_person(person)
+
+        # Now that the CSV is gone, this takes the same "no file" path a
+        # fresh install's first-ever refresh does: clears ref_weight_kg/
+        # ref_impedance and person_data.
+        await self._async_refresh_person_from_csv(person_id)
+
+        async_dispatcher_send(self.hass, f"{SIGNAL_PERSON_UPDATED}_{self.entry_id}_{person_id}")
+        return True
+
     # ---- manual reassignment ------------------------------------------
 
     async def async_reassign_last_measurement(self, target_person_id: str) -> bool:

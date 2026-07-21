@@ -7,6 +7,7 @@ import pytest
 from custom_components.okok_scale.assignment import is_registration_armed, match_person
 from custom_components.okok_scale.csv_logger import (
     append_row,
+    delete_csv,
     read_last_weight_kg,
     read_rows,
     reassign_session,
@@ -319,3 +320,21 @@ class TestCsvSchemaMigration:
         assert len(rows) == 2
         assert rows[0]["resistance_ohms"] == "600.0"
         assert rows[1]["resistance_ohms"] == "595.0"
+
+
+class TestDeleteCsv:
+    """delete_csv backs the "clear history" button - see
+    coordinator.async_clear_history."""
+
+    def test_deletes_an_existing_file(self, tmp_path: Path) -> None:
+        me_csv = tmp_path / "me.csv"
+        append_row(me_csv, {"time": "2026-07-19T08:00:00", "session_id": "sess-1", "weight_kg": 61.9})
+        assert me_csv.exists()
+
+        assert delete_csv(me_csv) is True
+        assert not me_csv.exists()
+
+    def test_missing_file_is_a_noop(self, tmp_path: Path) -> None:
+        me_csv = tmp_path / "me.csv"
+        assert delete_csv(me_csv) is False
+        assert not me_csv.exists()

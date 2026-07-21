@@ -92,6 +92,19 @@ def read_last_row(csv_path: Path) -> dict[str, str] | None:
     return rows[-1] if rows else None
 
 
+def delete_csv(csv_path: Path) -> bool:
+    """Permanently delete a person's whole CSV file (used by "clear
+    history" - see coordinator.async_clear_history). Unlike
+    delete_session_rows, this is not scoped to one session: it wipes the
+    entire history, unrecoverably. Returns whether a file actually existed
+    to delete.
+    """
+    if not csv_path.exists():
+        return False
+    csv_path.unlink()
+    return True
+
+
 def delete_session_rows(csv_path: Path, session_id: str) -> list[dict[str, str]]:
     """Remove every row belonging to `session_id`, rewriting the file.
 
@@ -177,6 +190,9 @@ class CsvLogger:
 
     async def async_read_last_row(self, person_id: str) -> dict[str, str] | None:
         return await self._hass.async_add_executor_job(read_last_row, self.path_for(person_id))
+
+    async def async_delete_csv(self, person_id: str) -> bool:
+        return await self._hass.async_add_executor_job(delete_csv, self.path_for(person_id))
 
     async def async_reassign_session(
         self,
