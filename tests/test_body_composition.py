@@ -5,11 +5,15 @@ import pytest
 from custom_components.okok_scale.body_composition import (
     calc_baseline_body_fat_pct,
     calc_body_fat_pct,
+    calc_body_water_pct,
     calc_relative_body_fat_pct,
+    calc_resistance_ohms,
 )
 from custom_components.okok_scale.const import (
     BODY_FAT_MAX_PCT,
     BODY_FAT_MIN_PCT,
+    BODY_WATER_MAX_PCT,
+    BODY_WATER_MIN_PCT,
     FORMULA_DEURENBERG_1991,
     FORMULA_DEURENBERG_1992,
     FORMULA_EDDY_1976,
@@ -104,3 +108,47 @@ def test_relative_body_fat_pct_none_without_baseline() -> None:
 
 def test_relative_body_fat_pct_none_without_absolute_value() -> None:
     assert calc_relative_body_fat_pct(None, 16.4) is None
+
+
+def test_resistance_ohms_converts_the_scales_raw_x10_units() -> None:
+    # Confirmed against the real captured session (61.90 kg / raw 6000):
+    # 600 ohms is within openScale's documented ~500+-100 ohm range for a
+    # foot-to-foot scale; 6000 ohms directly is not.
+    assert calc_resistance_ohms(6000) == pytest.approx(600.0)
+
+
+def test_resistance_ohms_none_without_impedance() -> None:
+    assert calc_resistance_ohms(None) is None
+    assert calc_resistance_ohms(0) is None
+
+
+def test_body_water_pct_sun_2003() -> None:
+    # Sun et al. 2003, gender-specific coefficients - see body_composition.py.
+    male = calc_body_water_pct(weight_kg=61.9, height_cm=178, sex="male", impedance=6000)
+    female = calc_body_water_pct(weight_kg=78.0, height_cm=165, sex="female", impedance=6000)
+    assert male == pytest.approx(58.0)
+    assert female == pytest.approx(41.8)
+
+
+def test_body_water_pct_none_without_impedance() -> None:
+    """Unlocked/not-yet-measured frames report impedance 0 - nothing to
+    estimate from yet, same treatment as calc_resistance_ohms."""
+    assert calc_body_water_pct(weight_kg=61.9, height_cm=178, sex="male", impedance=0) is None
+    assert calc_body_water_pct(weight_kg=61.9, height_cm=178, sex="male", impedance=None) is None
+
+
+def test_body_water_pct_guards_divide_by_zero() -> None:
+    assert calc_body_water_pct(weight_kg=61.9, height_cm=0, sex="male", impedance=6000) is None
+
+
+def test_body_water_pct_clamped_to_plausible_range() -> None:
+    # Implausibly high resistance shrinks the height^2/R term toward zero,
+    # leaving too little water for the weight alone to explain - clamps at
+    # the floor rather than reporting an absurd number.
+    low = calc_body_water_pct(weight_kg=61.9, height_cm=178, sex="male", impedance=100000)
+    assert low == BODY_WATER_MIN_PCT
+
+    # Implausibly low resistance blows the same term up instead - clamps
+    # at the ceiling rather than exceeding the person's own body weight.
+    high = calc_body_water_pct(weight_kg=61.9, height_cm=178, sex="male", impedance=100)
+    assert high == BODY_WATER_MAX_PCT

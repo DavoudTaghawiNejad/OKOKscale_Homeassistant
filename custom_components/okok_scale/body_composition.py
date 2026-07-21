@@ -3,20 +3,31 @@
 No Home Assistant imports: unit-tested in isolation
 (see tests/test_body_composition.py).
 
-Honesty note (also surfaced in the README): none of the body-fat formulas
-below actually consume the scale's bio-impedance reading. They are the
-BMI/age/sex estimation formulas published on the openScale wiki's "Body
-metric estimations" page, which is what openScale itself uses for scales
-like this one that don't document a calibrated impedance regression. A
-genuine bio-impedance (BIA) body-fat model needs the raw resistance in ohms
-plus a validated, device-specific regression (e.g. Kyle 2001, Sun 2003) and
-per-scale calibration constants that this hardware does not publish.
+Honesty note (also surfaced in the README): none of the body-*fat*
+formulas below actually consume the scale's bio-impedance reading. They
+are the BMI/age/sex estimation formulas published on the openScale wiki's
+"Body metric estimations" page, which is what openScale itself uses for
+scales like this one that don't document a calibrated impedance
+regression. Because no such calibration exists for body fat, the
+integration doesn't expose this absolute body-fat estimate directly -
+only *relative to a personal baseline* (see calc_relative_body_fat_pct /
+calc_baseline_body_fat_pct), where a lot of the systematic error cancels
+out since it's the same bias applied consistently to every reading for
+that person.
 
-Because none of that calibration exists, the integration doesn't expose
-this absolute body-fat estimate directly - only *relative to a personal
-baseline* (see calc_relative_body_fat_pct / calc_baseline_body_fat_pct),
-where a lot of the calibration error cancels out since it's the same bias
-applied consistently to every reading for that person.
+Body *water* is different: calc_body_water_pct below is a genuine
+bio-impedance (BIA) estimate - Sun et al. 2003's population regression
+(also adopted by openScale's own StandardImpedanceLib.kt for scales like
+this one), which needs the true resistance in ohms rather than BMI alone.
+That resistance isn't what the scale broadcasts directly - see
+calc_resistance_ohms and const.IMPEDANCE_RAW_UNITS_PER_OHM for the raw-to-
+ohms conversion this hardware needs first. Sun 2003 is a well-validated
+*general-population* regression (SEE roughly 3-5% of body weight against a
+4-compartment reference method), not a regression calibrated for this
+specific scale's electrodes, so treat the absolute percentage as a good
+average-case estimate rather than a lab-grade measurement - and, same as
+body fat, trust changes over time under consistent measurement conditions
+more than any single absolute reading.
 """
 
 from __future__ import annotations
@@ -26,13 +37,20 @@ from collections.abc import Sequence
 from .const import (
     BODY_FAT_MAX_PCT,
     BODY_FAT_MIN_PCT,
+    BODY_WATER_MAX_PCT,
+    BODY_WATER_MIN_PCT,
     DEFAULT_BODY_FAT_FORMULA,
     FORMULA_DEURENBERG_1991,
     FORMULA_DEURENBERG_1992,
     FORMULA_EDDY_1976,
     FORMULA_GALLAGHER_2000,
+    IMPEDANCE_RAW_UNITS_PER_OHM,
 )
 from .models import Sex
+
+#: Converts total-body-water liters to kg, at ~36.5C average body
+#: temperature - see Sun et al. 2003 / openScale's StandardImpedanceLib.kt.
+_WATER_DENSITY_KG_PER_LITER = 0.99513
 
 
 def _is_male(sex: Sex) -> int:
@@ -49,6 +67,51 @@ def _raw_bmi(weight_kg: float, height_cm: float) -> float | None:
 
 def _clamp_body_fat(pct: float) -> float:
     return max(BODY_FAT_MIN_PCT, min(BODY_FAT_MAX_PCT, pct))
+
+
+def _clamp_body_water(pct: float) -> float:
+    return max(BODY_WATER_MIN_PCT, min(BODY_WATER_MAX_PCT, pct))
+
+
+def calc_resistance_ohms(impedance: int | None) -> float | None:
+    """Convert the scale's raw impedance reading to true resistance in
+    ohms (see const.IMPEDANCE_RAW_UNITS_PER_OHM), or None for an
+    unlocked/not-yet-measured frame (impedance 0 or missing).
+    """
+    if not impedance or impedance <= 0:
+        return None
+    return round(impedance / IMPEDANCE_RAW_UNITS_PER_OHM, 1)
+
+
+def _sun_2003_total_body_water_kg(weight_kg: float, height_cm: float, resistance_ohms: float, sex: Sex) -> float:
+    """TBW (Sun et al. 2003): height^2/resistance ("resistance index") plus
+    weight, gender-specific coefficients. See module docstring.
+    """
+    h2r = height_cm * height_cm / resistance_ohms
+    if sex == "male":
+        liters = 1.2 + 0.45 * h2r + 0.18 * weight_kg
+    else:
+        liters = 3.75 + 0.45 * h2r + 0.11 * weight_kg
+    return liters * _WATER_DENSITY_KG_PER_LITER
+
+
+def calc_body_water_pct(
+    weight_kg: float,
+    height_cm: float,
+    sex: Sex,
+    impedance: int | None,
+) -> float | None:
+    """Total-body-water percentage via the Sun et al. 2003 BIA regression,
+    clamped to a plausible range. None if weight/height are non-physical
+    or impedance isn't available yet (see calc_resistance_ohms).
+    """
+    if weight_kg is None or weight_kg <= 0 or height_cm is None or height_cm <= 0:
+        return None
+    resistance_ohms = calc_resistance_ohms(impedance)
+    if resistance_ohms is None:
+        return None
+    tbw_kg = _sun_2003_total_body_water_kg(weight_kg, height_cm, resistance_ohms, sex)
+    return round(_clamp_body_water(tbw_kg / weight_kg * 100), 1)
 
 
 def _deurenberg_1991(bmi: float, age_years: float, sex: Sex) -> float:

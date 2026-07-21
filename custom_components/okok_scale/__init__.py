@@ -37,6 +37,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     if not hass.data.get(_STATIC_PATH_REGISTERED_KEY):
+        # Home Assistant only serves a static path if the directory already
+        # exists at *registration* time (it silently skips creating the
+        # route otherwise - see homeassistant.components.http._make_static_
+        # resources' os.path.isdir check) and this only ever runs once per
+        # HA runtime. On a fresh install nothing has been logged yet, so
+        # the csv/ directory doesn't exist until the first weighing - which
+        # made every CSV download 404 forever, even after weighings started
+        # arriving. Create it upfront so the route is always live.
+        await hass.async_add_executor_job(lambda: coordinator.csv_dir.mkdir(parents=True, exist_ok=True))
         await hass.http.async_register_static_paths(
             [
                 StaticPathConfig(

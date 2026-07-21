@@ -8,6 +8,7 @@ from custom_components.okok_scale.assignment import is_registration_armed, match
 from custom_components.okok_scale.csv_logger import (
     append_row,
     read_last_weight_kg,
+    read_rows,
     reassign_session,
 )
 from custom_components.okok_scale.models import Person
@@ -178,6 +179,11 @@ class TestCsvReassignment:
         # ... and body_fat_relative_pct against *her* baseline, not
         # whatever it happened to be under "me" (122.0 above).
         assert moved[0]["body_fat_relative_pct"] == pytest.approx(126.3, abs=0.5)
+        # body_water_pct is likewise recomputed against the wife's own
+        # height/sex (Sun 2003 needs both), while resistance_ohms - which
+        # doesn't depend on the person - is just carried over unchanged.
+        assert moved[0]["body_water_pct"] == pytest.approx(45.8)
+        assert moved[0]["resistance_ohms"] == ""
 
         # "me"'s CSV now ends with their own earlier, correct session.
         assert read_last_weight_kg(me_csv) == pytest.approx(61.9)
@@ -226,3 +232,85 @@ class TestCsvReassignment:
         assert moved == []
         assert read_last_weight_kg(me_csv) == pytest.approx(61.9)
         assert read_last_weight_kg(wife_csv) is None
+
+
+class TestCsvSchemaMigration:
+    """resistance_ohms/body_water_pct were added to CSV_FIELDNAMES after
+    people could already have real weighing history on disk under the
+    older 6-column header. append_row must migrate such a file's header in
+    place rather than silently misaligning every column a later
+    csv.DictReader maps by name (see csv_logger._migrate_schema_if_needed).
+    """
+
+    def test_appending_to_an_old_schema_file_migrates_its_header(self, tmp_path: Path) -> None:
+        me_csv = tmp_path / "me.csv"
+        # A file exactly as an earlier version of this integration would
+        # have written it - the pre-resistance_ohms/body_water_pct header.
+        me_csv.write_text(
+            "time,session_id,weight_kg,impedance,body_fat_pct,body_fat_relative_pct\n"
+            "2026-07-19T08:00:00,sess-1,61.9,6000,16.4,100.0\n"
+        )
+
+        append_row(
+            me_csv,
+            {
+                "time": "2026-07-20T08:00:00",
+                "session_id": "sess-2",
+                "weight_kg": 62.5,
+                "impedance": 5900,
+                "body_fat_pct": 16.1,
+                "body_fat_relative_pct": 98.2,
+                "resistance_ohms": 590.0,
+                "body_water_pct": 58.4,
+            },
+        )
+
+        rows = read_rows(me_csv)
+        assert len(rows) == 2
+        # The old row's data survives untouched, with the new columns
+        # backfilled blank rather than misaligned into some other field.
+        assert rows[0]["session_id"] == "sess-1"
+        assert rows[0]["weight_kg"] == "61.9"
+        assert rows[0]["body_fat_pct"] == "16.4"
+        assert rows[0]["resistance_ohms"] == ""
+        assert rows[0]["body_water_pct"] == ""
+        # The new row is written under the migrated (correct) header.
+        assert rows[1]["session_id"] == "sess-2"
+        assert rows[1]["resistance_ohms"] == "590.0"
+        assert rows[1]["body_water_pct"] == "58.4"
+
+    def test_appending_to_an_already_current_schema_file_is_a_noop_migration(self, tmp_path: Path) -> None:
+        """A file already on the current schema shouldn't be rewritten -
+        just confirms the fast path (header comparison) doesn't itself
+        corrupt anything."""
+        me_csv = tmp_path / "me.csv"
+        append_row(
+            me_csv,
+            {
+                "time": "2026-07-19T08:00:00",
+                "session_id": "sess-1",
+                "weight_kg": 61.9,
+                "impedance": 6000,
+                "body_fat_pct": 16.4,
+                "body_fat_relative_pct": 100.0,
+                "resistance_ohms": 600.0,
+                "body_water_pct": 58.0,
+            },
+        )
+        append_row(
+            me_csv,
+            {
+                "time": "2026-07-20T08:00:00",
+                "session_id": "sess-2",
+                "weight_kg": 62.0,
+                "impedance": 5950,
+                "body_fat_pct": 16.2,
+                "body_fat_relative_pct": 98.8,
+                "resistance_ohms": 595.0,
+                "body_water_pct": 58.2,
+            },
+        )
+        rows = read_rows(me_csv)
+        assert len(rows) == 2
+        assert rows[0]["resistance_ohms"] == "600.0"
+        assert rows[1]["resistance_ohms"] == "595.0"

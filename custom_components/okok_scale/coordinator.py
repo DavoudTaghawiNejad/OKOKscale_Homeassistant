@@ -24,7 +24,13 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from .assignment import is_registration_armed, match_person
-from .body_composition import calc_baseline_body_fat_pct, calc_body_fat_pct, calc_relative_body_fat_pct
+from .body_composition import (
+    calc_baseline_body_fat_pct,
+    calc_body_fat_pct,
+    calc_body_water_pct,
+    calc_relative_body_fat_pct,
+    calc_resistance_ohms,
+)
 from .const import (
     BASELINE_MEASUREMENT_COUNT,
     BUILD_TIMESTAMP,
@@ -266,6 +272,8 @@ class OkokScaleCoordinator:
         final_body_fat_pct = calc_body_fat_pct(
             final.weight_kg, person.height_cm, person.age_years, person.sex, final.impedance, self.body_fat_formula
         )
+        final_resistance_ohms = calc_resistance_ohms(final.impedance)
+        final_body_water_pct = calc_body_water_pct(final.weight_kg, person.height_cm, person.sex, final.impedance)
 
         # Update the rolling baseline history and auto-establish the
         # baseline itself the first time it fills up (see
@@ -287,6 +295,8 @@ class OkokScaleCoordinator:
                 frame.weight_kg, person.height_cm, person.age_years, person.sex, frame.impedance, self.body_fat_formula
             )
             frame_relative_pct = calc_relative_body_fat_pct(frame_body_fat_pct, person.baseline_body_fat_pct)
+            frame_resistance_ohms = calc_resistance_ohms(frame.impedance)
+            frame_body_water_pct = calc_body_water_pct(frame.weight_kg, person.height_cm, person.sex, frame.impedance)
             await self.csv_logger.async_append_row(
                 person_id,
                 {
@@ -296,6 +306,8 @@ class OkokScaleCoordinator:
                     "impedance": frame.impedance,
                     "body_fat_pct": frame_body_fat_pct,
                     "body_fat_relative_pct": frame_relative_pct,
+                    "resistance_ohms": frame_resistance_ohms,
+                    "body_water_pct": frame_body_water_pct,
                 },
             )
 
@@ -313,6 +325,8 @@ class OkokScaleCoordinator:
             "assigned_at": time.time(),
             "body_fat_pct": final_body_fat_pct,
             "body_fat_relative_pct": final_relative_pct,
+            "resistance_ohms": final_resistance_ohms,
+            "body_water_pct": final_body_water_pct,
         }
         self.person_data[person_id] = measurement
         self.last_measurement = measurement
@@ -379,6 +393,8 @@ class OkokScaleCoordinator:
             "timestamp": row.get("time"),
             "body_fat_pct": body_fat_pct,
             "body_fat_relative_pct": calc_relative_body_fat_pct(body_fat_pct, baseline),
+            "resistance_ohms": _optional_float(row.get("resistance_ohms")),
+            "body_water_pct": _optional_float(row.get("body_water_pct")),
         }
 
     # ---- registration -----------------------------------------------------

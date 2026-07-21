@@ -71,6 +71,20 @@ DEFAULT_BODY_FAT_FORMULA = FORMULA_GALLAGHER_2000
 BODY_FAT_MIN_PCT = 3.0
 BODY_FAT_MAX_PCT = 70.0
 
+#: The scale's raw impedance reading is 10x true resistance in ohms -
+#: confirmed against the real captured session (61.90 kg / raw impedance
+#: 6000): plugging 6000 ohms directly into a BIA regression gives a
+#: non-physical ~24% body-water estimate, while 600 ohms lands right in
+#: the expected ~500+-100 ohm range for a foot-to-foot scale and produces a
+#: plausible ~58% estimate. See body_composition.calc_resistance_ohms.
+IMPEDANCE_RAW_UNITS_PER_OHM = 10
+
+#: Plausible total-body-water percentage clamp range (defensive bounds,
+#: not "normal" bounds - genuine physiological range is roughly 43-73%,
+#: see body_composition.py).
+BODY_WATER_MIN_PCT = 25.0
+BODY_WATER_MAX_PCT = 75.0
+
 # --- Options flow keys -------------------------------------------------
 
 CONF_SCALE_MAC = "scale_mac"
@@ -93,10 +107,19 @@ STATIC_CSV_URL_PATH = "/api/okok_scale/csv"
 REASSIGN_MAX_AGE_SECONDS = 3600
 
 #: CSV column header, also used as the canonical row-dict key order.
-#: body_fat_pct is the absolute (unrelative-ized, uncalibrated) estimate;
-#: body_fat_relative_pct is that same value expressed against the
-#: person's baseline (100% = baseline average). See body_composition.py
-#: and coordinator.py for how each is derived.
+#: impedance is the scale's raw (x10) unit; resistance_ohms is that value
+#: converted via IMPEDANCE_RAW_UNITS_PER_OHM, i.e. what any BIA formula
+#: actually needs. body_fat_pct is the absolute (unrelative-ized,
+#: uncalibrated, impedance-blind - see body_composition.py) BMI-based
+#: estimate; body_fat_relative_pct is that same value expressed against
+#: the person's baseline (100% = baseline average). body_water_pct is the
+#: Sun et al. 2003 BIA regression estimate, which does use resistance_ohms.
+#: See body_composition.py and coordinator.py for how each is derived.
+#:
+#: New columns are appended, never inserted in the middle - csv_logger.
+#: append_row migrates any pre-existing file's header to match this list
+#: (see _migrate_schema_if_needed), but appending here keeps that a no-op
+#: for the common case of a file already on this exact schema.
 CSV_FIELDNAMES = [
     "time",
     "session_id",
@@ -104,6 +127,8 @@ CSV_FIELDNAMES = [
     "impedance",
     "body_fat_pct",
     "body_fat_relative_pct",
+    "resistance_ohms",
+    "body_water_pct",
 ]
 
 # --- Diagnostics -----------------------------------------------------------

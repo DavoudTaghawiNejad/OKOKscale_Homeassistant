@@ -270,6 +270,60 @@ async def test_full_weighing_pipeline_assigns_and_updates_sensors(configured_ent
     wife_weight_state = hass.states.get("sensor.okok_scale_wife_weight")
     assert float(wife_weight_state.state) == pytest.approx(78.0)
 
+    # The weight sensor also carries the BIA-derived figures for whoever's
+    # data is currently attributed to it.
+    me_weight_state = hass.states.get("sensor.okok_scale_me_weight")
+    assert me_weight_state.attributes["resistance_ohms"] == pytest.approx(600.0)
+    assert me_weight_state.attributes["body_water_pct"] == pytest.approx(58.0)
+
+
+async def test_csv_directory_exists_before_any_weighing(configured_entry) -> None:
+    """Previously, the CSV directory only got created on the first
+    weighing (see csv_logger.ensure_parent_dir), but the static download
+    path is only ever registered once, at integration startup - so on a
+    fresh install the download route silently never got its resource
+    (Home Assistant's static-path registration skips creating one if the
+    directory doesn't exist yet at that moment), and every download 404'd
+    forever even after weighings started arriving. __init__.py now creates
+    the directory upfront so the route is always live.
+    """
+    hass, entry = configured_entry
+    coordinator = _coordinator(hass, entry)
+    assert coordinator.csv_dir.is_dir()
+
+
+async def test_csv_download_url_actually_serves_the_file(configured_entry, hass_client_no_auth) -> None:
+    """End-to-end regression for the download-404 bug above: not just that
+    csv_download_url is set (test_abandoned_capture_is_recovered_via_normal_
+    matching already checks that), but that fetching it actually works and
+    returns the row with the new resistance_ohms/body_water_pct columns.
+    """
+    hass, entry = configured_entry
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_add_person(name="Me", sex="male", age_years=40, height_cm=178)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = _coordinator(hass, entry)
+
+    await coordinator.async_arm_registration("me")
+    await coordinator._async_finish_session(_build_session(*F_6190_LOCKED, now=1000.0))
+    await hass.async_block_till_done()
+
+    client = await hass_client_no_auth()
+    resp = await client.get(coordinator.csv_download_url("me"))
+    assert resp.status == 200
+    body = await resp.text()
+
+    lines = body.strip().splitlines()
+    header = lines[0].split(",")
+    row = dict(zip(header, lines[1].split(",")))
+    assert "resistance_ohms" in header
+    assert "body_water_pct" in header
+    assert row["weight_kg"] == "61.9"
+    assert row["resistance_ohms"] == "600.0"
+    assert row["body_water_pct"] == "58.0"
+
 
 async def test_reassign_select_moves_measurement_between_people(configured_entry) -> None:
     """The documented failure mode: midpoint-interval matching lands a

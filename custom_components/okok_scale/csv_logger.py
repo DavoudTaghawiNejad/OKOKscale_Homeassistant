@@ -15,7 +15,7 @@ import functools
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .body_composition import calc_body_fat_pct, calc_relative_body_fat_pct
+from .body_composition import calc_body_fat_pct, calc_body_water_pct, calc_relative_body_fat_pct
 from .const import CSV_FIELDNAMES, DEFAULT_BODY_FAT_FORMULA
 
 if TYPE_CHECKING:
@@ -26,10 +26,36 @@ def ensure_parent_dir(csv_path: Path) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _migrate_schema_if_needed(csv_path: Path) -> None:
+    """Rewrite an existing file's header to match the current
+    CSV_FIELDNAMES, backfilling any newly-added columns as blank.
+
+    CSV_FIELDNAMES has grown over time (e.g. resistance_ohms/body_water_pct
+    were added after people already had real weighing history on disk).
+    csv.DictWriter in append mode never rewrites a file's first line, so
+    without this, appending a row with the new (longer) fieldnames list to
+    a file still carrying the old header would misalign every column a
+    later csv.DictReader (which trusts the file's own header) maps values
+    against. read_rows() itself is unaffected either way.
+    """
+    with csv_path.open("r", newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames == CSV_FIELDNAMES:
+            return
+        rows = list(reader)
+    with csv_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_FIELDNAMES)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in CSV_FIELDNAMES})
+
+
 def append_row(csv_path: Path, row: dict[str, Any]) -> None:
     """Append one row, writing the header first if the file is new/empty."""
     ensure_parent_dir(csv_path)
     is_new = not csv_path.exists() or csv_path.stat().st_size == 0
+    if not is_new:
+        _migrate_schema_if_needed(csv_path)
     with csv_path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDNAMES)
         if is_new:
@@ -92,11 +118,13 @@ def reassign_session(
 ) -> list[dict[str, Any]]:
     """Move every row of `session_id` from one person's CSV to another's.
 
-    body_fat_pct and body_fat_relative_pct are recomputed against the
-    *target* person's height/age/sex/baseline before the rows are written,
-    since those were originally derived from whoever the session was
-    (wrongly) assigned to. Returns the new rows as written to `to_path`
-    (used by the caller to recompute ref_weight_kg/ref_impedance).
+    body_fat_pct, body_fat_relative_pct, and body_water_pct are recomputed
+    against the *target* person's height/age/sex/baseline before the rows
+    are written, since those were originally derived from whoever the
+    session was (wrongly) assigned to. resistance_ohms doesn't depend on
+    the person, so it's carried over unchanged. Returns the new rows as
+    written to `to_path` (used by the caller to recompute
+    ref_weight_kg/ref_impedance).
     """
     removed = delete_session_rows(from_path, session_id)
     moved: list[dict[str, Any]] = []
@@ -107,6 +135,7 @@ def reassign_session(
             weight_kg, target_height_cm, target_age_years, target_sex, impedance, target_formula
         )
         body_fat_relative_pct = calc_relative_body_fat_pct(body_fat_pct, target_baseline_body_fat_pct)
+        body_water_pct = calc_body_water_pct(weight_kg, target_height_cm, target_sex, impedance)
         new_row: dict[str, Any] = {
             "time": row["time"],
             "session_id": row["session_id"],
@@ -114,6 +143,8 @@ def reassign_session(
             "impedance": impedance,
             "body_fat_pct": body_fat_pct,
             "body_fat_relative_pct": body_fat_relative_pct,
+            "resistance_ohms": row.get("resistance_ohms", ""),
+            "body_water_pct": body_water_pct,
         }
         append_row(to_path, new_row)
         moved.append(new_row)

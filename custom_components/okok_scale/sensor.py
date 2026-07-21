@@ -110,7 +110,12 @@ class OkokScalePersonSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         if self.entity_description.key == "weight":
-            return {"csv_download_url": self._coordinator.csv_download_url(self._person_id)}
+            data = self._coordinator.person_data.get(self._person_id) or {}
+            return {
+                "csv_download_url": self._coordinator.csv_download_url(self._person_id),
+                "resistance_ohms": data.get("resistance_ohms"),
+                "body_water_pct": data.get("body_water_pct"),
+            }
         if self.entity_description.key == "body_fat_relative":
             person = self._coordinator.people.get(self._person_id)
             data = self._coordinator.person_data.get(self._person_id) or {}

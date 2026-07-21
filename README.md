@@ -131,17 +131,16 @@ fat, raw impedance) is exposed as its own sensor or card field anymore - an earl
 integration did expose all of those, sourced from openScale's BMI/age/sex formulas, but they were
 removed in favour of just this one, more honestly-framed number.
 
-**Why relative, not absolute**: none of the available body-fat formulas actually consume the
+**Why relative, not absolute**: none of the available body-*fat* formulas actually consume the
 scale's bio-impedance reading - they're the BMI/age/sex estimation formulas published on the
 [openScale wiki's "Body metric
 estimations"](https://github.com/oliexdev/openScale/wiki/Bodymetric-estimation-formulas) page,
 which is what openScale itself uses for scales like this one that don't document a calibrated
-impedance regression. A genuine bio-impedance (BIA) body-fat model needs the raw resistance in
-ohms plus a validated, device-specific regression (e.g. Kyle 2001, Sun 2003) and per-scale
-calibration constants this scale doesn't publish - so the *absolute* number from any of these
-formulas isn't trustworthy on its own. Expressed *relative to a personal baseline*, though, a
-formula's systematic bias mostly cancels out (it's applied consistently to every reading for that
-person), leaving something much more meaningful: "am I trending up or down from where I started."
+impedance regression. So the *absolute* number from any of these formulas isn't trustworthy on its
+own. Expressed *relative to a personal baseline*, though, a formula's systematic bias mostly
+cancels out (it's applied consistently to every reading for that person), leaving something much
+more meaningful: "am I trending up or down from where I started." (Body *water* is a different
+story - see "Body water (BIA)" below - since that one does consume the scale's impedance reading.)
 
 **How the baseline works**:
 - Every completed weighing computes an absolute, uncalibrated body-fat% (formula selectable in
@@ -169,11 +168,37 @@ bookkeeping), unit-tested in
 [`tests/test_body_composition.py`](tests/test_body_composition.py) and
 [`tests/test_session_engine.py`](tests/test_session_engine.py).
 
+## Body water (BIA)
+
+Unlike body fat, total-body-water *does* use the scale's impedance reading, via `calc_body_water_pct`
+in `body_composition.py`: Sun et al. 2003's bioelectrical-impedance regression (`1.2 + 0.45 *
+height_cm^2/resistance_ohms + 0.18 * weight_kg`, gender-specific coefficients), the same formula
+openScale's own `StandardImpedanceLib.kt` uses for scales like this one that don't publish a
+calibrated regression of their own.
+
+That formula needs true resistance in ohms, and the scale's raw impedance reading isn't that -
+it's 10x too high (a real captured reading of 61.90 kg decodes to raw impedance 6000, but
+openScale documents ~500+-100 ohm as normal for a foot-to-foot scale; 6000 ohms plugged in
+directly gives a non-physical ~24% water estimate, while 600 ohms - raw / 10 - gives a plausible
+~58%). `calc_resistance_ohms` (`IMPEDANCE_RAW_UNITS_PER_OHM` in `const.py`) does that conversion.
+
+Sun 2003 is a well-validated *general-population* regression (roughly 3-5% of body weight standard
+error against a 4-compartment reference method in the original study), not a regression calibrated
+for this specific scale's electrodes - so, same as body fat, treat the absolute percentage as a
+good average-case estimate and trust changes over time under consistent measurement conditions
+(not right after a workout or a big meal) more than any single reading. Unlike body fat, it's
+exposed as-is rather than gated behind a personal baseline, since it's a genuine physical-quantity
+regression rather than a BMI proxy.
+
+`resistance_ohms` and `body_water_pct` are logged to CSV for every frame (see "CSV logging and
+downloads" below) and carried as attributes on `sensor.okok_scale_<person>_weight`.
+
 ## Entities
 
 Per registered person (`<person>` = their slugified id):
 
-- `sensor.okok_scale_<person>_weight` (kg) - also carries `csv_download_url`
+- `sensor.okok_scale_<person>_weight` (kg) - also carries `csv_download_url`, `resistance_ohms`,
+  and `body_water_pct` (see "Body water (BIA)" above)
 - `sensor.okok_scale_<person>_body_fat_relative` (%, 100% = baseline) - carries
   `baseline_body_fat_pct`, `absolute_body_fat_pct`, and `measurements_until_baseline` as attributes
 - `button.okok_scale_<person>_download_csv` - posts a persistent notification with the CSV link
@@ -191,10 +216,15 @@ Integration-wide:
 
 Every frame of a session is appended (not just the final value), so each person's file is a
 directly graphable settling-curve-plus-trend history:
-`time,session_id,weight_kg,impedance,body_fat_pct,body_fat_relative_pct`. `body_fat_pct` is the
-absolute (uncalibrated) estimate; `body_fat_relative_pct` is that row's value against whatever the
-person's baseline was *at the time the row was written* (unlike the live sensor, which always
-reflects the *current* baseline - resetting the baseline doesn't rewrite CSV history).
+`time,session_id,weight_kg,impedance,body_fat_pct,body_fat_relative_pct,resistance_ohms,body_water_pct`.
+`body_fat_pct` is the absolute (uncalibrated) estimate; `body_fat_relative_pct` is that row's value
+against whatever the person's baseline was *at the time the row was written* (unlike the live
+sensor, which always reflects the *current* baseline - resetting the baseline doesn't rewrite CSV
+history). `resistance_ohms`/`body_water_pct` are the BIA figures described in "Body water (BIA)"
+above. New columns are always appended at the end, never inserted in the middle - if a person's
+file already existed with an older, shorter header, `csv_logger.append_row` migrates it in place
+(rewriting the header and backfilling the new columns blank for old rows) the next time anything is
+appended, rather than silently misaligning columns.
 
 Files live at `<config>/okok_scale/csv/<person_id>.csv` - deliberately **outside** `config/www`,
 since that folder may not exist, mixes integration data into the user's own dashboard assets, and
@@ -206,6 +236,17 @@ so a person's file is always fetchable at `/api/okok_scale/csv/<person_id>.csv`.
 weight sensor carries this URL as the `csv_download_url` attribute, and each person also gets a
 download button that posts a persistent notification with the same link - pick whichever suits
 your dashboard.
+
+**Fresh-install download bug (fixed)**: Home Assistant only actually wires up a static path's
+directory listing if that directory already exists at the moment `async_register_static_paths` is
+called (it silently skips creating the route otherwise), and that registration only happens once
+per Home Assistant run. The `csv/` directory used to only get created lazily, on the first weighing
+(`csv_logger.ensure_parent_dir`) - which on a fresh install is *after* startup already registered
+the (then-missing) directory, so every download 404'd permanently, even once weighings started
+arriving, until the next full Home Assistant restart. `__init__.py` now creates the directory
+upfront, before registering the static path, so the route is always live. Regression-tested end to
+end (actual HTTP fetch, not just checking the attribute is set) in
+`tests/test_ha_integration.py::test_csv_download_url_actually_serves_the_file`.
 
 All file I/O runs through `hass.async_add_executor_job`; the row read/write/delete/reassign logic
 itself is plain, synchronous, path-based functions in `csv_logger.py` so it's unit-testable
@@ -291,9 +332,16 @@ tolerance -> weight/impedance midpoint intervals, also at the user's request), a
 registration flow was reworked twice: first to keep the dialog open until a weighing is actually
 captured (instead of closing immediately regardless of outcome), then to not create the person's
 profile *at all* until that capture succeeds (instead of creating it up front and only capturing a
-reference value afterward). If you're reading old issues/commits referencing BMI/lean
-mass/body water sensors, a `match_tolerance_kg` option, or a person existing before their first
-weigh-in, that's why - it hasn't been that way for a while.
+reference value afterward). If you're reading old issues/commits referencing BMI/lean mass
+sensors, a `match_tolerance_kg` option, or a person existing before their first weigh-in, that's
+why - it hasn't been that way for a while.
+
+Body water was later reintroduced on a different footing than the original BMI-based estimate:
+once the scale's raw impedance reading was decoded to be 10x true resistance in ohms (see "Body
+water (BIA)" above), a genuine bio-impedance regression (Sun et al. 2003, the same one openScale's
+own `StandardImpedanceLib.kt` uses) became possible - unlike the BMI-only body-fat formulas, this
+one actually consumes the measurement this scale exists to provide, so it's shown as a plain
+absolute figure rather than gated behind a personal baseline.
 
 ## Development
 
@@ -314,10 +362,12 @@ relative imports (`from .const import ...`) that the real integration uses insid
   session finalizes much faster than an unlocked one - see "Hardware notes" above), and the
   reference session decode (61.90 kg / impedance 6000).
 - `tests/test_body_composition.py` - all four body-fat formulas, clamping, divide-by-zero guards,
-  and the baseline/relative-body-fat calculations.
+  the baseline/relative-body-fat calculations, and the Sun 2003 body-water formula (raw-to-ohms
+  conversion, gender-specific coefficients, clamping).
 - `tests/test_session_engine.py` - registration-arming bypass, weight/impedance midpoint-interval
-  matching (agreement, disagreement + weight×impedance tiebreak, unseeded fallback), and CSV
-  reassignment (row movement + recomputed refs + baseline-relative recompute).
+  matching (agreement, disagreement + weight×impedance tiebreak, unseeded fallback), CSV
+  reassignment (row movement + recomputed refs + baseline-relative recompute), and CSV
+  schema migration (appending to a file still on the pre-body-water header).
 
 ### Real Home Assistant integration tests
 
