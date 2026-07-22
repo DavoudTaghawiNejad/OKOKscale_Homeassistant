@@ -1,23 +1,25 @@
 """Sensor platform for OKOK Body Composition Scale.
 
-Four sensors per registered person - weight, body fat relative to their
-personal baseline, body water (the absolute BIA estimate), and body water
-relative to its own (separately-tracked) baseline (100% = baseline; see
-coordinator.py / body_composition.py for how each baseline is
+Five sensors per registered person - weight, body fat (absolute), body
+fat relative to its personal baseline, body water (absolute), and body
+water relative to its own (separately-tracked) baseline (100% = baseline;
+see coordinator.py / body_composition.py for how each baseline is
 established/updated) - plus one integration-wide "last measurement"
 sensor that names whoever was most recently weighed and blanks itself
 after const.LAST_MEASUREMENT_TIMEOUT_SECONDS.
 
 Body fat's *absolute* estimate isn't calibrated (see body_composition.py's
 module docstring - it's a BMI/age/sex proxy that doesn't consume the
-scale's impedance reading at all), so it's kept internal - available as an
-attribute on the relative sensor for transparency, but not promoted to its
-own entity. Body water is different: it's a genuine bio-impedance (BIA)
-regression that does consume impedance (via resistance_ohms), so unlike
-body fat its absolute value is trustworthy enough to show as its own
-entity rather than only relative to a baseline - the relative sensor is an
-*additional* view for spotting hydration swings against a personal norm,
-not a replacement for the absolute one.
+scale's impedance reading at all): it was originally kept internal for
+exactly that reason, available only as an attribute on the relative
+sensor. It's since been promoted to its own entity too (at explicit
+request), but the caveat hasn't gone away - it carries a `formula`
+attribute naming which of the four BMI-based formulas produced it, and
+"relative to baseline" is still the more trustworthy way to read it over
+time. Body water is different: it's a genuine bio-impedance (BIA)
+regression that does consume impedance (via resistance_ohms), so its
+absolute value was trustworthy enough to expose as its own entity from
+the start - see body_composition.py's docstring for both stories in full.
 
 Entities are push-updated via dispatcher signals fired by
 coordinator.OkokScaleCoordinator - there's no polling here.
@@ -62,6 +64,14 @@ PERSON_SENSOR_DESCRIPTIONS: tuple[OkokPersonSensorDescription, ...] = (
         value_fn=lambda data: data.get("weight_kg"),
     ),
     OkokPersonSensorDescription(
+        key="body_fat",
+        translation_key="body_fat",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=1,
+        value_fn=lambda data: data.get("body_fat_pct"),
+    ),
+    OkokPersonSensorDescription(
         key="body_fat_relative",
         translation_key="body_fat_relative",
         state_class=SensorStateClass.MEASUREMENT,
@@ -103,7 +113,7 @@ async def async_setup_entry(
 
 
 class OkokScalePersonSensor(SensorEntity):
-    """One metric (weight, relative body fat, absolute body water, or
+    """One metric (weight, absolute/relative body fat, or absolute/
     relative body water) for one registered person."""
 
     _attr_has_entity_name = True
@@ -134,6 +144,8 @@ class OkokScalePersonSensor(SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any] | None:
         if self.entity_description.key == "weight":
             return {"csv_download_url": self._coordinator.csv_download_url(self._person_id)}
+        if self.entity_description.key == "body_fat":
+            return {"formula": self._coordinator.body_fat_formula}
         if self.entity_description.key == "body_fat_relative":
             person = self._coordinator.people.get(self._person_id)
             data = self._coordinator.person_data.get(self._person_id) or {}

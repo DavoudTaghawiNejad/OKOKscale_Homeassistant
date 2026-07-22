@@ -140,25 +140,31 @@ and relative body fat, impedance, timestamp, person id) as attributes. It blanks
 (`unknown`) 10 minutes after the last weighing (`LAST_MEASUREMENT_TIMEOUT_SECONDS`), and the timer
 resets on every new weighing.
 
-## Body composition: weight and body fat relative to a personal baseline
+## Body composition: weight and body fat, absolute and relative to a personal baseline
 
-Body fat is only ever shown **relative to its own baseline** (100% = baseline), never as an
-absolute number - see "Why relative, not absolute" below. An earlier version of this integration
-exposed BMI, lean mass, body water, absolute body fat, and raw impedance as first-class
-sensors/CSV fields, sourced from openScale's BMI/age/sex formulas; those were removed in favour of
-just the one honestly-framed relative number (body water was later reintroduced on a different,
-more defensible footing - see "Body water (BIA)" below).
+Body fat is shown both **relative to its own baseline** (100% = baseline) and as a **plain
+absolute number** - see "Absolute body fat: still uncalibrated" below for why relative is still
+the more trustworthy of the two. An earlier version of this integration exposed BMI, lean mass,
+body water, absolute body fat, and raw impedance as first-class sensors/CSV fields, sourced from
+openScale's BMI/age/sex formulas; those were all removed in favour of just the one honestly-framed
+relative number. Body water was later reintroduced on a more defensible footing (see "Body water
+(BIA)" below), and absolute body fat was reintroduced too - at explicit request - alongside the
+relative sensor rather than instead of it.
 
-**Why relative, not absolute**: none of the available body-*fat* formulas actually consume the
-scale's bio-impedance reading - they're the BMI/age/sex estimation formulas published on the
-[openScale wiki's "Body metric
+**Absolute body fat: still uncalibrated**: none of the available body-*fat* formulas actually
+consume the scale's bio-impedance reading - they're the BMI/age/sex estimation formulas published
+on the [openScale wiki's "Body metric
 estimations"](https://github.com/oliexdev/openScale/wiki/Bodymetric-estimation-formulas) page,
 which is what openScale itself uses for scales like this one that don't document a calibrated
 impedance regression. So the *absolute* number from any of these formulas isn't trustworthy on its
-own. Expressed *relative to a personal baseline*, though, a formula's systematic bias mostly
-cancels out (it's applied consistently to every reading for that person), leaving something much
-more meaningful: "am I trending up or down from where I started." (Body *water* is a different
-story - see "Body water (BIA)" below - since that one does consume the scale's impedance reading.)
+own - `sensor.okok_scale_<person>_body_fat` carries a `formula` attribute naming which of the four
+BMI-based formulas produced it, precisely because it's a formula-dependent estimate, not a
+measurement. Expressed *relative to a personal baseline*, though, a formula's systematic bias
+mostly cancels out (it's applied consistently to every reading for that person), leaving something
+much more meaningful: "am I trending up or down from where I started" - `body_fat_relative` is
+still the one to trust for that. (Body *water* is a different story - see "Body water (BIA)" below
+- since that one does consume the scale's impedance reading, so its absolute value doesn't carry
+the same caveat.)
 
 **How the baseline works**: the same mechanism applies independently to both body fat and body
 water (see "Body water (BIA)" below) - each has its own rolling history and its own baseline,
@@ -231,6 +237,8 @@ body_water`'s state (with `resistance_ohms` as its attribute); `body_water_relat
 Per registered person (`<person>` = their slugified id):
 
 - `sensor.okok_scale_<person>_weight` (kg) - also carries `csv_download_url`
+- `sensor.okok_scale_<person>_body_fat` (%) - the raw BMI-based estimate (see "Absolute body fat:
+  still uncalibrated" above); carries `formula` as an attribute
 - `sensor.okok_scale_<person>_body_fat_relative` (%, 100% = baseline) - carries
   `baseline_body_fat_pct`, `absolute_body_fat_pct`, and `measurements_until_baseline` as attributes
 - `sensor.okok_scale_<person>_body_water` (%) - the Sun 2003 BIA estimate (see "Body water (BIA)"
@@ -297,15 +305,16 @@ without a Home Assistant runtime.
 
 Two cards, matching the two things there are to look at: today's numbers, and the trend.
 
-**Current values card** - weight, relative body fat, body water (absolute and relative), and the
-reset-baseline button, per person. No custom code needed, just a stock entities card (repeat per
-person, swapping the id; drop whichever body-water entity you don't want):
+**Current values card** - weight, body fat (absolute and relative), body water (absolute and
+relative), and the reset-baseline button, per person. No custom code needed, just a stock entities
+card (repeat per person, swapping the id; drop whichever entities you don't want):
 
 ```yaml
 type: entities
 title: Me
 entities:
   - sensor.okok_scale_me_weight
+  - sensor.okok_scale_me_body_fat
   - sensor.okok_scale_me_body_fat_relative
   - sensor.okok_scale_me_body_water
   - sensor.okok_scale_me_body_water_relative
@@ -391,6 +400,13 @@ one actually consumes the measurement this scale exists to provide, so its absol
 directly rather than only relative to a baseline. A relative-to-baseline view (`body_water_relative`)
 was added alongside it shortly after, reusing body fat's existing baseline mechanism but tracked as
 its own independent baseline - see "How the baseline works" above.
+
+Absolute body fat itself was reintroduced still later, again at explicit request, as its own
+`sensor.okok_scale_<person>_body_fat` alongside (not instead of) the relative sensor - unlike body
+water's reintroduction, this one didn't come with new calibration: it's still the same BMI/age/sex
+proxy described in "Absolute body fat: still uncalibrated" above, just no longer hidden from view.
+If you're looking for why the reasoning above sounds like it's arguing against exposing the very
+number that's now a sensor, that's why - the caveat is older than the sensor.
 
 ## Development
 

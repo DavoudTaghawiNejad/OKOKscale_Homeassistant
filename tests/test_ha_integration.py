@@ -271,8 +271,7 @@ async def test_full_weighing_pipeline_assigns_and_updates_sensors(configured_ent
     assert float(wife_weight_state.state) == pytest.approx(78.0)
 
     # The BIA-derived body-water figure gets its own entity (state = %,
-    # resistance_ohms as a supporting attribute), unlike absolute body fat
-    # which stays attribute-only since it isn't calibrated.
+    # resistance_ohms as a supporting attribute).
     me_water_state = hass.states.get("sensor.okok_scale_me_body_water")
     assert float(me_water_state.state) == pytest.approx(58.0)
     assert me_water_state.attributes["resistance_ohms"] == pytest.approx(600.0)
@@ -281,6 +280,13 @@ async def test_full_weighing_pipeline_assigns_and_updates_sensors(configured_ent
     # established - see test_reset_baseline_button_resets_both_fat_and_water
     # for the baseline machinery itself).
     assert "sensor.okok_scale_me_body_water_relative" in hass.states.async_entity_ids()
+
+    # Absolute body fat (Gallagher 2000, the default formula) gets its own
+    # entity too, carrying which formula produced it - still an
+    # uncalibrated BMI proxy (see body_composition.py), unlike body water.
+    me_fat_state = hass.states.get("sensor.okok_scale_me_body_fat")
+    assert float(me_fat_state.state) == pytest.approx(11.9)
+    assert me_fat_state.attributes["formula"] == "gallagher2000"
 
 
 async def test_reset_baseline_button_resets_both_fat_and_water(configured_entry) -> None:

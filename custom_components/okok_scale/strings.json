@@ -86,6 +86,7 @@
   "entity": {
     "sensor": {
       "weight": { "name": "Weight" },
+      "body_fat": { "name": "Body fat" },
       "body_fat_relative": { "name": "Body fat (relative to baseline)" },
       "body_water": { "name": "Body water" },
       "body_water_relative": { "name": "Body water (relative to baseline)" },
